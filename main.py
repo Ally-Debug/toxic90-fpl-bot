@@ -98,26 +98,40 @@ def send_telegram_photo(image_path, caption=""):
     return success
 
 def send_html_email(subject, html_content):
+    print(f"--> Initiating Outbound Email Dispatch...")
+    print(f"  SMTP Server: {SMTP_SERVER}:{SMTP_PORT}")
+    print(f"  SMTP Username: '{SMTP_USERNAME}'")
+    print(f"  SMTP Password configured: {'YES' if SMTP_PASSWORD else 'NO (EMPTY SECRET!)'}")
+    print(f"  Email Recipient(s): '{EMAIL_RECIPIENT}'")
+    
     if not SMTP_PASSWORD or not SMTP_USERNAME:
-        print(f"[EMAIL DRY RUN] To: {EMAIL_RECIPIENT} | Subject: {subject}")
-        return True
+        err_msg = "❌ CRITICAL: SMTP_USERNAME or SMTP_PASSWORD is missing in GitHub Repository Secrets!"
+        print(err_msg)
+        raise ValueError(err_msg)
+        
     recipients = [r.strip() for r in EMAIL_RECIPIENT.split(",") if r.strip()]
+    if not recipients:
+        err_msg = "❌ CRITICAL: EMAIL_RECIPIENT secret is empty!"
+        print(err_msg)
+        raise ValueError(err_msg)
+
     msg = MIMEMultipart("alternative")
     msg["Subject"] = subject
     msg["From"] = f"Toxic 90 Scout <{SMTP_USERNAME}>"
     msg["To"] = ", ".join(recipients)
     msg.attach(MIMEText("Please enable HTML to view the Toxic 90 Scout Briefing.", "plain"))
     msg.attach(MIMEText(html_content, "html"))
+    
     try:
-        with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as server:
+        with smtplib.SMTP(SMTP_SERVER, SMTP_PORT, timeout=20) as server:
             server.starttls()
             server.login(SMTP_USERNAME, SMTP_PASSWORD)
             server.sendmail(SMTP_USERNAME, recipients, msg.as_string())
-            print(f"Email delivered to {recipients}")
+            print(f"✅ Email successfully delivered to {recipients}")
             return True
     except Exception as e:
-        print(f"Email delivery error: {e}")
-        return False
+        print(f"❌ SMTP Dispatch Failed: {e}")
+        raise e
 
 def send_email_with_card_attachments(subject, caption, image_paths):
     if not SMTP_PASSWORD or not SMTP_USERNAME:

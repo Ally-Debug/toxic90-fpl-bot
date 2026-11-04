@@ -7,15 +7,15 @@ on:
   workflow_dispatch: # Allows manual trigger anytime from GitHub UI
     inputs:
       force_trigger:
-        description: 'Force a specific trigger for testing'
+        description: 'Action to execute'
         required: false
-        default: 'none'
+        default: 'newsletter'
         type: choice
         options:
-          - none
           - newsletter
           - deadline
           - concluded
+          - poll_cycle
 
 jobs:
   check-and-notify:
@@ -38,7 +38,7 @@ jobs:
 
       - name: Run FPL Monitor
         env:
-          FORCE_TRIGGER: ${{ inputs.force_trigger }}
+          FORCE_TRIGGER: ${{ github.event.inputs.force_trigger || inputs.force_trigger }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           SMTP_SERVER: smtp.gmail.com
