@@ -1,0 +1,45 @@
+name: Toxic 90 FPL Autonomous Monitor
+
+on:
+  schedule:
+    # Runs every hour at the top of the hour (24 runs/day = 720 mins/month, well within 2,000 free minutes)
+    - cron: '0 * * * *'
+  workflow_dispatch: # Allows manual trigger anytime from GitHub UI
+
+jobs:
+  check-and-notify:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # Needed to commit state.json and docs/ back to repo
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install System Dependencies (Poppler for PDF->PNG)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y poppler-utils
+
+      - name: Run FPL Monitor
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          SMTP_SERVER: smtp.gmail.com
+          SMTP_PORT: 587
+          SMTP_USERNAME: ${{ secrets.SMTP_USERNAME }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          EMAIL_RECIPIENT: ${{ secrets.EMAIL_RECIPIENT }}
+        run: |
+          python main.py
+
+      - name: Persist State & Web Archive
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git add state.json docs/
+          git diff --quiet && git diff --staged --quiet || (git commit -m "chore: update FPL monitor state and web archive [skip ci]" && git push)
