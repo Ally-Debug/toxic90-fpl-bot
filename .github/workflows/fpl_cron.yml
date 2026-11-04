@@ -5,6 +5,17 @@ on:
     # Runs every hour at the top of the hour (24 runs/day = 720 mins/month, well within 2,000 free minutes)
     - cron: '0 * * * *'
   workflow_dispatch: # Allows manual trigger anytime from GitHub UI
+    inputs:
+      force_trigger:
+        description: 'Force a specific trigger for testing'
+        required: false
+        default: 'none'
+        type: choice
+        options:
+          - none
+          - newsletter
+          - deadline
+          - concluded
 
 jobs:
   check-and-notify:
@@ -27,6 +38,7 @@ jobs:
 
       - name: Run FPL Monitor
         env:
+          FORCE_TRIGGER: ${{ inputs.force_trigger }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           SMTP_SERVER: smtp.gmail.com

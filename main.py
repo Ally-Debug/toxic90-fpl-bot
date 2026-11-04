@@ -423,4 +423,17 @@ def poll_cycle():
     print("Poll cycle finished.")
 
 if __name__ == "__main__":
-    poll_cycle()
+    force = os.environ.get("FORCE_TRIGGER", "").strip().lower()
+    if force == "newsletter":
+        print("FORCE TRIGGER: Executing GW10 Pre-Deadline Scout Newsletter...")
+        trigger_newsletter(10)
+    elif force == "deadline":
+        bs = fetch_json("https://fantasy.premierleague.com/api/bootstrap-static/")
+        print("FORCE TRIGGER: Executing GW10 Post-Deadline Artifacts 1 & 2...")
+        trigger_deadline(10, bs)
+    elif force == "concluded":
+        bs = fetch_json("https://fantasy.premierleague.com/api/bootstrap-static/")
+        print("FORCE TRIGGER: Executing GW9 Concluded Artifacts 3 & 4...")
+        trigger_over(9, bs)
+    else:
+        poll_cycle()
