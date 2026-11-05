@@ -1136,56 +1136,60 @@ async function handleSubscription() {
     renderAlert('<span class="fpl-spinner" style="border-top-color:#10b981;"></span> <b>Phase 3/3:</b> Writing to Neon database...', '#10b981', '#0f172a', '#e2e8f0');
     await sleep(400);
 
-    const endpointsToTry = [
-        window.location.hostname.includes('vercel.app') ? '/api/subscribe' : 'https://toxic90-fpl-bot.vercel.app/api/subscribe',
-        '/api/subscribe'
-    ];
+    const isVercelHost = window.location.hostname.includes('vercel.app');
+    const apiUrl = isVercelHost ? '/api/subscribe' : 'https://toxic90-fpl-bot.vercel.app/api/subscribe';
 
     let dbSaved = false;
     let lastErrorMsg = '';
 
-    for (const ep of endpointsToTry) {
-        try {
-            const apiRes = await fetch(ep, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ email: email, team_id: teamIdInt, team_name: fplTeamName })
-            });
-            
-            if (apiRes.status === 409) {
-                const errData = await apiRes.json().catch(() => ({}));
-                renderAlert('❌ <b>Registration Blocked: Duplicate Record</b><br>' + (errData.error || 'A record with this email, team ID, or team name already exists in Neon DB.') + '<br><span style="display:block; margin-top:6px; font-size:11px; color:#991b1b; font-weight:600;">Existing database records are preserved.</span>', '#ef4444', '#fef2f2', '#991b1b');
-                btn.innerText = '❌ Duplicate Detected in Neon DB';
-                btn.style.background = '#991b1b';
-                setTimeout(resetButton, 3500);
-                return;
-            } else if (apiRes.status === 403) {
-                const errData = await apiRes.json().catch(() => ({}));
-                renderAlert('🔒 <b>Registration Closed:</b> ' + (errData.error || 'The global submission cap of 50 subscribers has been reached.'), '#ef4444', '#fef2f2', '#991b1b');
-                btn.innerText = '🔒 Registration Cap Reached (50/50)';
-                btn.style.background = '#64748b';
-                setTimeout(resetButton, 3500);
-                return;
-            } else if (apiRes.ok) {
-                const resData = await apiRes.json().catch(() => ({}));
-                if (resData.success) {
-                    dbSaved = true;
-                    break;
-                }
+    try {
+        const apiRes = await fetch(apiUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ email: email, team_id: teamIdInt, team_name: fplTeamName })
+        });
+        
+        if (apiRes.status === 409) {
+            const errData = await apiRes.json().catch(() => ({}));
+            renderAlert('❌ <b>Registration Blocked: Duplicate Record</b><br>' + (errData.error || 'A record with this email, team ID, or team name already exists in Neon DB.') + '<br><span style="display:block; margin-top:6px; font-size:11px; color:#991b1b; font-weight:600;">Existing database records are preserved.</span>', '#ef4444', '#fef2f2', '#991b1b');
+            btn.innerText = '❌ Duplicate Detected in Neon DB';
+            btn.style.background = '#991b1b';
+            setTimeout(resetButton, 3500);
+            return;
+        } else if (apiRes.status === 403) {
+            const errData = await apiRes.json().catch(() => ({}));
+            renderAlert('🔒 <b>Registration Closed:</b> ' + (errData.error || 'The global submission cap of 50 subscribers has been reached.'), '#ef4444', '#fef2f2', '#991b1b');
+            btn.innerText = '🔒 Registration Cap Reached (50/50)';
+            btn.style.background = '#64748b';
+            setTimeout(resetButton, 3500);
+            return;
+        } else if (apiRes.ok) {
+            const resData = await apiRes.json().catch(() => ({}));
+            if (resData.success) {
+                dbSaved = true;
             } else {
-                const errData = await apiRes.json().catch(() => ({}));
-                lastErrorMsg = errData.error || ('HTTP ' + apiRes.status + ' response');
+                lastErrorMsg = resData.error || 'Database operation was not completed.';
             }
-        } catch (eDb) {
-            lastErrorMsg = eDb.message || 'Endpoint unreachable';
+        } else if (apiRes.status === 404) {
+            const textResp = await apiRes.text().catch(() => '');
+            if (textResp.includes('DEPLOYMENT_NOT_FOUND')) {
+                lastErrorMsg = 'Vercel backend is not deployed yet (DEPLOYMENT_NOT_FOUND). Please click Redeploy in Vercel.';
+            } else {
+                lastErrorMsg = 'Endpoint returned 404 Not Found on Vercel.';
+            }
+        } else {
+            const errData = await apiRes.json().catch(() => ({}));
+            lastErrorMsg = errData.error || ('HTTP ' + apiRes.status + ' response from backend');
         }
+    } catch (eDb) {
+        lastErrorMsg = 'Unable to reach backend (' + (eDb.message || 'Network/CORS error') + '). Ensure Vercel deployment is active.';
     }
 
     if (!dbSaved) {
         renderAlert('❌ <b>Database Write Incomplete</b><br>' + 
-                    'The details could not be written to Neon DB. ' + (lastErrorMsg ? 'Reason: <i>' + lastErrorMsg + '</i>.<br>' : '') + 
+                    'The details could not be written to Neon DB. Reason: <i>' + lastErrorMsg + '</i>.<br>' + 
                     '<span style="display:block; margin-top:6px; font-size:11px; color:#991b1b; font-weight:600;">' + 
-                    'Your data was verified but has not been stored in Neon DB yet. Please add DATABASE_URL in Vercel Project Settings or add the manager via GitHub Actions CLI.' + 
+                    'To enable instantaneous in-browser database writes, please add DATABASE_URL in Vercel Project Settings and click Redeploy.' + 
                     '</span>', 
                     '#ef4444', '#fef2f2', '#991b1b');
         btn.innerText = '❌ Database Write Failed';
