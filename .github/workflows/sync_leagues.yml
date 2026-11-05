@@ -1,0 +1,31 @@
+name: Sync Manager Leagues to Neon DB
+
+on:
+  workflow_dispatch:
+    inputs:
+      team_id:
+        description: 'FPL Team ID (or "all" to sync leagues for all managers in the table)'
+        required: true
+        default: 'all'
+
+jobs:
+  sync-leagues:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install DB Driver
+        run: |
+          pip install --no-cache-dir psycopg2-binary pg8000
+
+      - name: Fetch and Sync Leagues into Neon DB
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL || secrets.NEON_DB_URL }}
+        run: |
+          python main.py --sync-leagues "${{ github.event.inputs.team_id }}"

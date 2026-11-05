@@ -93,8 +93,8 @@ def get_db_connection(db_url):
 
 def get_newsletter_recipients():
     """
-    Retrieves active subscriber email addresses from Neon DB 'newsletter' table.
-    Filters strictly for active subscribers with non-empty email addresses.
+    Retrieves subscriber email addresses from Neon DB 'newsletter' table.
+    Filters strictly for non-null, non-empty email addresses.
     Falls back gracefully to EMAIL_RECIPIENT secret if DATABASE_URL is not set.
     """
     if DATABASE_URL:
@@ -105,16 +105,13 @@ def get_newsletter_recipients():
                 CREATE TABLE IF NOT EXISTS newsletter (
                     id SERIAL PRIMARY KEY,
                     manager_name VARCHAR(150),
-                    fpl_team_id INTEGER NOT NULL,
+                    fpl_team_id INTEGER NOT NULL UNIQUE,
                     email VARCHAR(255) UNIQUE,
-                    leagues JSONB DEFAULT '[]'::jsonb,
-                    is_active BOOLEAN DEFAULT TRUE,
-                    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-                    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+                    leagues JSONB DEFAULT '[]'::jsonb
                 );
             """)
             conn.commit()
-            cur.execute("SELECT email FROM newsletter WHERE is_active = TRUE AND email IS NOT NULL AND email != '';")
+            cur.execute("SELECT email FROM newsletter WHERE email IS NOT NULL AND email != '';")
             rows = cur.fetchall()
             cur.close()
             conn.close()
@@ -132,6 +129,60 @@ def get_newsletter_recipients():
     if secret_emails:
         print(f"ℹ️ Loaded {len(secret_emails)} subscriber(s) from EMAIL_RECIPIENT secret.")
     return secret_emails
+
+def sync_leagues_for_manager(fpl_team_id):
+    """
+    Fetches official leagues for a given FPL team ID from official FPL API
+    and updates the 'leagues' JSONB column in Neon DB 'newsletter' table.
+    If fpl_team_id is 'all', syncs leagues for all managers in the newsletter table.
+    """
+    if not DATABASE_URL:
+        print("❌ DATABASE_URL or NEON_DB_URL is not configured in environment.")
+        return False
+        
+    conn = get_db_connection(DATABASE_URL)
+    cur = conn.cursor()
+    
+    # If 'all', query all team IDs in newsletter
+    if str(fpl_team_id).lower() == 'all':
+        cur.execute("SELECT fpl_team_id, manager_name FROM newsletter;")
+        targets = cur.fetchall()
+    else:
+        cur.execute("SELECT fpl_team_id, manager_name FROM newsletter WHERE fpl_team_id = %s;", (int(fpl_team_id),))
+        targets = cur.fetchall()
+        if not targets:
+            targets = [(int(fpl_team_id), "Unknown")]
+            
+    print(f"--> Syncing leagues for {len(targets)} manager(s)...")
+    for tid, m_name in targets:
+        try:
+            print(f"Fetching leagues from FPL for Team ID {tid} ({m_name})...")
+            url = f"https://fantasy.premierleague.com/api/entry/{tid}/"
+            data = fetch_json(url)
+            classic_leagues = data.get("leagues", {}).get("classic", [])
+            h2h_leagues = data.get("leagues", {}).get("h2h", [])
+            
+            leagues_payload = {
+                "classic": [{"id": l["id"], "name": l["name"], "entry_rank": l.get("entry_rank")} for l in classic_leagues],
+                "h2h": [{"id": l["id"], "name": l["name"], "entry_rank": l.get("entry_rank")} for l in h2h_leagues]
+            }
+            leagues_json = json.dumps(leagues_payload)
+            
+            # Update the newsletter table
+            cur.execute("""
+                UPDATE newsletter 
+                SET leagues = %s
+                WHERE fpl_team_id = %s;
+            """, (leagues_json, tid))
+            print(f"✅ Updated leagues for {m_name} (Team ID: {tid}): {len(classic_leagues)} Classic, {len(h2h_leagues)} H2H.")
+        except Exception as e:
+            print(f"❌ Failed to fetch/update leagues for Team ID {tid}: {e}")
+            
+    conn.commit()
+    cur.close()
+    conn.close()
+    print("League synchronization complete!")
+    return True
 
 def seed_toxic90_managers():
     """
@@ -165,17 +216,14 @@ def seed_toxic90_managers():
     try:
         conn = get_db_connection(DATABASE_URL)
         cur = conn.cursor()
-        # 1. Create table if needed
+        # 1. Create trimmed table if needed
         cur.execute("""
             CREATE TABLE IF NOT EXISTS newsletter (
                 id SERIAL PRIMARY KEY,
                 manager_name VARCHAR(150),
-                fpl_team_id INTEGER NOT NULL,
+                fpl_team_id INTEGER NOT NULL UNIQUE,
                 email VARCHAR(255) UNIQUE,
-                leagues JSONB DEFAULT '[]'::jsonb,
-                is_active BOOLEAN DEFAULT FALSE,
-                created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+                leagues JSONB DEFAULT '[]'::jsonb
             );
         """)
         # 2. Relax email constraint if it had NOT NULL
@@ -199,8 +247,8 @@ def seed_toxic90_managers():
         inserted_count = 0
         for eid, m in sorted(all_mgrs.items(), key=lambda x: x[1]["name"].lower()):
             cur.execute("""
-                INSERT INTO newsletter (manager_name, fpl_team_id, email, is_active)
-                VALUES (%s, %s, NULL, FALSE)
+                INSERT INTO newsletter (manager_name, fpl_team_id, email)
+                VALUES (%s, %s, NULL)
                 ON CONFLICT (fpl_team_id) DO UPDATE
                 SET manager_name = EXCLUDED.manager_name;
             """, (m["name"], eid))
@@ -243,23 +291,18 @@ def register_subscriber_in_db(email, fpl_team_id):
             CREATE TABLE IF NOT EXISTS newsletter (
                 id SERIAL PRIMARY KEY,
                 manager_name VARCHAR(150),
-                fpl_team_id INTEGER NOT NULL,
-                email VARCHAR(255) NOT NULL UNIQUE,
-                leagues JSONB DEFAULT '[]'::jsonb,
-                is_active BOOLEAN DEFAULT TRUE,
-                created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+                fpl_team_id INTEGER NOT NULL UNIQUE,
+                email VARCHAR(255) UNIQUE,
+                leagues JSONB DEFAULT '[]'::jsonb
             );
         """)
         cur.execute("""
-            INSERT INTO newsletter (manager_name, fpl_team_id, email, leagues, is_active)
-            VALUES (%s, %s, %s, %s, TRUE)
-            ON CONFLICT (email) DO UPDATE 
+            INSERT INTO newsletter (manager_name, fpl_team_id, email, leagues)
+            VALUES (%s, %s, %s, %s)
+            ON CONFLICT (fpl_team_id) DO UPDATE 
             SET manager_name = EXCLUDED.manager_name,
-                fpl_team_id = EXCLUDED.fpl_team_id,
-                leagues = EXCLUDED.leagues,
-                is_active = TRUE,
-                updated_at = CURRENT_TIMESTAMP;
+                email = EXCLUDED.email,
+                leagues = EXCLUDED.leagues;
         """, (manager_name, fpl_team_id, email, leagues_json))
         conn.commit()
         cur.close()
@@ -268,6 +311,7 @@ def register_subscriber_in_db(email, fpl_team_id):
         return True
     except Exception as e:
         print(f"❌ Database error registering subscriber: {e}")
+        return False
         return False
         return False
 
@@ -664,8 +708,14 @@ if __name__ == "__main__":
     parser.add_argument("--gw", type=int, default=10, help="Gameweek ID for manual runs")
     parser.add_argument("--add-subscriber", nargs=2, metavar=("EMAIL", "FPL_TEAM_ID"), help="Register a new subscriber in Neon DB")
     parser.add_argument("--seed-managers", action="store_true", help="Fetch all Toxic 90 managers from FPL API and seed into Neon DB")
+    parser.add_argument("--sync-leagues", metavar="TEAM_ID", help="Fetch and insert official FPL leagues as JSON into Neon DB for a team ID (or 'all')")
     
     args, unknown = parser.parse_known_args()
+
+    # Priority 0: Sync leagues for a team ID or all teams
+    if args.sync_leagues:
+        sync_leagues_for_manager(args.sync_leagues)
+        sys.exit(0)
 
     # Priority 1: Seed Toxic 90 managers from FPL API
     if args.seed_managers or args.mode == "seed_managers":
