@@ -261,12 +261,15 @@ def trigger_deadline(gw, bs):
     send_telegram_photo(png_1, f"🏆 <b>Toxic 90 ☢️ | GW {gw} Locked</b>\nTop 5 Managers, Captains & Active Chips.")
     send_telegram_photo(png_2, f"⚔️ <b>Toxic 90 ☢️ | GW {gw} Head-to-Head Matchups</b>\nFull fixture lineup for the gameweek.")
     
-    # Dispatch Email with Attached Cards
-    send_email_with_card_attachments(
-        f"[Toxic 90] Game Week {gw} Locked: Top 5 Captains & H2H Matchups",
-        f"Game Week {gw} has locked! Here are the Top 5 Managers, Captain selections, and H2H Matchups:",
-        [png_1, png_2]
-    )
+    # Dispatch Email with Attached Cards (Safe execution - won't block Telegram)
+    try:
+        send_email_with_card_attachments(
+            f"[Toxic 90] Game Week {gw} Locked: Top 5 Captains & H2H Matchups",
+            f"Game Week {gw} has locked! Here are the Top 5 Managers, Captain selections, and H2H Matchups:",
+            [png_1, png_2]
+        )
+    except Exception as e:
+        print(f"Email dispatch note (Telegram was delivered): {e}")
 
 # ==========================================
 # TRIGGER 2: POST-GAMEWEEK FINAL SETTLEMENT (ARTIFACTS 3 & 4)
@@ -351,12 +354,15 @@ def trigger_over(gw, bs):
     send_telegram_photo(png_3, f"🏆 <b>Toxic 90 ☢️ | GW {gw} Final Standings</b>\nOfficial data settled, auto-subs & bonus points applied.")
     send_telegram_photo(png_4, f"⚔️ <b>Toxic 90 ☢️ | GW {gw} Head-to-Head Results</b>\nFinal match scorelines and updated table.")
     
-    # Dispatch Email with Attached Cards
-    send_email_with_card_attachments(
-        f"[Toxic 90] Game Week {gw} Final Standings & H2H Results",
-        f"Game Week {gw} is officially settled! Find the updated Classic and H2H tables below:",
-        [png_3, png_4]
-    )
+    # Dispatch Email with Attached Cards (Safe execution - won't block Telegram)
+    try:
+        send_email_with_card_attachments(
+            f"[Toxic 90] Game Week {gw} Final Standings & H2H Results",
+            f"Game Week {gw} is officially settled! Find the updated Classic and H2H tables below:",
+            [png_3, png_4]
+        )
+    except Exception as e:
+        print(f"Email dispatch note (Telegram was delivered): {e}")
 
 # ==========================================
 # MASTER AUTONOMOUS ORCHESTRATOR

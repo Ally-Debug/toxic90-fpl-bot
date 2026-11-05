@@ -142,16 +142,16 @@ def make_table_pdf(pdf_path, title, headers, rows, col_widths, alignments, row_c
     with open(pdf_path, "wb") as f:
         f.write(pdf)
         
-    # Convert PDF to high-res PNG
+    # Convert PDF to ultra-crisp Retina PNG
     png_path = pdf_path.replace(".pdf", ".png")
     
-    # 1. Try Linux pdftoppm (Standard in GitHub Actions)
+    # 1. Linux pdftoppm (GitHub Actions runner - 280 DPI for razor-sharp text)
     if shutil.which("pdftoppm"):
-        cmd = ["pdftoppm", "-png", "-r", "160", "-singlefile", pdf_path, png_path.replace(".png", "")]
+        cmd = ["pdftoppm", "-png", "-r", "280", "-singlefile", pdf_path, png_path.replace(".png", "")]
         subprocess.run(cmd, check=True)
-    # 2. Try macOS sips or native tools
+    # 2. macOS sips (3.5x supersampled resolution)
     elif shutil.which("sips"):
-        cmd = ["sips", "-s", "format", "png", pdf_path, "--out", png_path]
+        cmd = ["sips", "-s", "format", "png", "-z", str(int(total_h * 3.5)), str(int(total_w * 3.5)), pdf_path, "--out", png_path]
         subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         
     return png_path
