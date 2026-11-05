@@ -1,4 +1,4 @@
-import json, os, urllib.request, ssl, re
+import json, os, urllib.request, urllib.parse, ssl, re
 
 CTX = ssl.create_default_context()
 CTX.check_hostname = False
@@ -74,7 +74,7 @@ def app(environ, start_response):
                 import psycopg2
                 conn = psycopg2.connect(clean_url)
             except Exception:
-                import pg8000.dbapi, urllib.parse
+                import pg8000.dbapi
                 p = urllib.parse.urlparse(clean_url)
                 conn = pg8000.dbapi.connect(
                     user=p.username, password=p.password, host=p.hostname,

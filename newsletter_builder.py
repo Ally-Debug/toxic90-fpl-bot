@@ -710,7 +710,7 @@ async function handleSubscription() {
     await sleep(400);
 
     const isVercelHost = window.location.hostname.includes('vercel.app');
-    const apiUrl = isVercelHost ? '/api/subscribe' : 'https://toxic90-fpl-bot.vercel.app/api/subscribe';
+    const apiUrl = isVercelHost ? '/api/subscribe' : 'https://toxic90-fpl-bot-snowy.vercel.app/api/subscribe';
 
     let dbSaved = false;
     let lastErrorMsg = '';
