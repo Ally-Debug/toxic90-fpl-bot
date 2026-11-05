@@ -9,9 +9,50 @@ class handler(BaseHTTPRequestHandler):
     def do_OPTIONS(self):
         self.send_response(200)
         self.send_header('Access-Control-Allow-Origin', '*')
-        self.send_header('Access-Control-Allow-Methods', 'POST, OPTIONS')
+        self.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
         self.send_header('Access-Control-Allow-Headers', 'Content-Type')
         self.end_headers()
+
+    def do_GET(self):
+        if self.path == '/api/subscribe':
+            self._respond(200, {"status": "ok", "service": "Toxic 90 FPL Subscription API"})
+            return
+
+        # Serve static docs (index.html or archive)
+        clean_path = self.path.split('?')[0]
+        if clean_path in ('', '/'):
+            clean_path = '/index.html'
+
+        base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        file_path = os.path.join(base_dir, 'docs', clean_path.lstrip('/'))
+        if os.path.isfile(file_path):
+            self.send_response(200)
+            if file_path.endswith('.html'):
+                self.send_header('Content-Type', 'text/html; charset=utf-8')
+            elif file_path.endswith('.json'):
+                self.send_header('Content-Type', 'application/json')
+            elif file_path.endswith('.css'):
+                self.send_header('Content-Type', 'text/css')
+            elif file_path.endswith('.js'):
+                self.send_header('Content-Type', 'application/javascript')
+            else:
+                self.send_header('Content-Type', 'application/octet-stream')
+            self.send_header('Access-Control-Allow-Origin', '*')
+            self.end_headers()
+            with open(file_path, 'rb') as f:
+                self.wfile.write(f.read())
+        else:
+            index_path = os.path.join(base_dir, 'docs', 'index.html')
+            if os.path.isfile(index_path):
+                self.send_response(200)
+                self.send_header('Content-Type', 'text/html; charset=utf-8')
+                self.send_header('Access-Control-Allow-Origin', '*')
+                self.end_headers()
+                with open(index_path, 'rb') as f:
+                    self.wfile.write(f.read())
+            else:
+                self.send_response(404)
+                self.end_headers()
 
     def do_POST(self):
         content_length = int(self.headers.get('Content-Length', 0))

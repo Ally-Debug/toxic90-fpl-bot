@@ -9,6 +9,12 @@ from card_generator import make_table_pdf
 from recommendation_engine import run_recommendation_engine
 from newsletter_builder import render_newsletter_html
 
+# Vercel Serverless Function entrypoint export
+try:
+    from api.subscribe import handler as handler
+except Exception:
+    handler = None
+
 CTX = ssl.create_default_context()
 CTX.check_hostname = False
 CTX.verify_mode = ssl.CERT_NONE
@@ -30,8 +36,10 @@ DATABASE_URL = os.environ.get("DATABASE_URL") or os.environ.get("NEON_DB_URL", "
 STATE_FILE = "state.json"
 CACHE_DIR = "/tmp/fpl_cache"
 DOCS_DIR = "docs"
+PUBLIC_DIR = "public"
 os.makedirs(CACHE_DIR, exist_ok=True)
 os.makedirs(os.path.join(DOCS_DIR, "archive"), exist_ok=True)
+os.makedirs(os.path.join(PUBLIC_DIR, "archive"), exist_ok=True)
 
 CHIP_NAMES = {
     "wildcard": "Wildcard",
@@ -508,14 +516,15 @@ def trigger_newsletter(gw=10):
     data = run_recommendation_engine()
     html_content = render_newsletter_html(data)
     
-    # 1. Update Layer 2: GitHub Pages Web Archive
+    # 1. Update Layer 2: GitHub Pages & Vercel Web Archive
     index_path = os.path.join(DOCS_DIR, "index.html")
     archive_path = os.path.join(DOCS_DIR, "archive", f"gw{gw}.html")
-    with open(index_path, "w", encoding="utf-8") as f:
-        f.write(html_content)
-    with open(archive_path, "w", encoding="utf-8") as f:
-        f.write(html_content)
-    print(f"Updated GitHub Pages archive: {index_path} and {archive_path}")
+    pub_index = os.path.join(PUBLIC_DIR, "index.html")
+    pub_archive = os.path.join(PUBLIC_DIR, "archive", f"gw{gw}.html")
+    for p in (index_path, archive_path, pub_index, pub_archive):
+        with open(p, "w", encoding="utf-8") as f:
+            f.write(html_content)
+    print(f"Updated Web archive in {DOCS_DIR} and {PUBLIC_DIR}")
     
     # 2. Dispatch Layer 1: Email Newsletter (Email ONLY - NOT Telegram)
     subject = f"Toxic 90 Scout: Game Week {gw} Final Briefing (3 Hours to Lock)"
