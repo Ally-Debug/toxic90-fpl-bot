@@ -99,22 +99,32 @@ class handler(BaseHTTPRequestHandler):
                 self._respond(403, {"success": False, "error": "Submission cap of 50 subscribers has been reached. Form is now closed."})
                 return
 
-            # 6. Check Duplicate: If data already exists, do not duplicate; keep existing
+            # 6. Check Duplicate: If email, team ID, or team name already exists, REJECT
             cur.execute("""
-                SELECT id, manager_name, team_name, email 
+                SELECT id, manager_name, team_name, email, fpl_team_id 
                 FROM newsletter 
-                WHERE fpl_team_id = %s OR email = %s;
-            """, (team_id_int, email))
+                WHERE LOWER(TRIM(COALESCE(email, ''))) = LOWER(TRIM(%s))
+                   OR fpl_team_id = %s
+                   OR (team_name IS NOT NULL AND team_name != '' AND LOWER(TRIM(team_name)) = LOWER(TRIM(%s)));
+            """, (email, team_id_int, team_name))
             existing = cur.fetchone()
             if existing:
+                ex_id, ex_mgr, ex_team, ex_email, ex_tid = existing
+                reasons = []
+                if ex_email and ex_email.strip().lower() == email:
+                    reasons.append(f"email '{email}' is already registered to manager '{ex_mgr}'")
+                if ex_tid == team_id_int:
+                    reasons.append(f"FPL Team ID '{team_id_int}' is already registered to manager '{ex_mgr}'")
+                if ex_team and team_name and ex_team.strip().lower() == team_name.strip().lower():
+                    reasons.append(f"team name '{team_name}' is already registered to manager '{ex_mgr}'")
+                reason_str = " and ".join(reasons) if reasons else f"a record already exists for '{ex_mgr}'"
                 cur.close()
                 conn.close()
-                self._respond(200, {
-                    "success": True,
+                self._respond(409, {
+                    "success": False,
                     "duplicate": True,
-                    "manager_name": existing[1],
-                    "team_name": existing[2] or team_name,
-                    "message": f"Manager '{existing[1]}' is already registered in the system!"
+                    "error": f"Registration Blocked: {reason_str.capitalize()}. Duplicate entries are strictly prohibited.",
+                    "manager_name": ex_mgr
                 })
                 return
 

@@ -336,18 +336,30 @@ def register_subscriber_in_db(email, fpl_team_id):
             );
         """)
         
-        # Scenario 2: Duplicate Handling (If user/email already exists, do not create duplicate; keep existing)
+        # Scenario 2: Strict Duplicate Handling (Check Email, Team ID, AND Team Name)
         cur.execute("""
-            SELECT id, manager_name, team_name, email 
+            SELECT id, manager_name, team_name, email, fpl_team_id 
             FROM newsletter 
-            WHERE fpl_team_id = %s OR email = %s;
-        """, (fpl_team_id_int, email))
+            WHERE LOWER(TRIM(COALESCE(email, ''))) = LOWER(TRIM(%s))
+               OR fpl_team_id = %s
+               OR (team_name IS NOT NULL AND team_name != '' AND LOWER(TRIM(team_name)) = LOWER(TRIM(%s)));
+        """, (email, fpl_team_id_int, team_name))
         existing = cur.fetchone()
         if existing:
-            print(f"ℹ️ Duplicate detected: Team ID {fpl_team_id_int} or email '{email}' already registered for '{existing[1]}'. Existing entry preserved.")
+            ex_id, ex_mgr, ex_team, ex_email, ex_tid = existing
+            reasons = []
+            if ex_email and ex_email.strip().lower() == email:
+                reasons.append(f"email '{email}' is already registered to manager '{ex_mgr}'")
+            if ex_tid == fpl_team_id_int:
+                reasons.append(f"FPL Team ID '{fpl_team_id_int}' is already registered to manager '{ex_mgr}'")
+            if ex_team and team_name and ex_team.strip().lower() == team_name.strip().lower():
+                reasons.append(f"team name '{team_name}' is already registered to manager '{ex_mgr}'")
+            
+            reason_str = " and ".join(reasons) if reasons else f"a matching record already exists for '{ex_mgr}'"
+            print(f"❌ REGISTRATION REJECTED: {reason_str.capitalize()}. Duplicate entries are strictly prohibited.")
             cur.close()
             conn.close()
-            return True
+            return False
 
         # Check Global 50-Submissions Cap
         cur.execute("SELECT COUNT(*) FROM newsletter WHERE email IS NOT NULL AND email != '';")
@@ -784,7 +796,10 @@ if __name__ == "__main__":
     # Priority 2: Direct subscriber addition via CLI
     if args.add_subscriber:
         sub_email, sub_fpl_id = args.add_subscriber
-        register_subscriber_in_db(sub_email, int(sub_fpl_id))
+        ok = register_subscriber_in_db(sub_email, int(sub_fpl_id))
+        if not ok:
+            print("❌ Add subscriber failed. Process aborted.")
+            sys.exit(1)
         sys.exit(0)
 
     # Priority 2: Check FORCE_TRIGGER environment variable (for GitHub Actions backward compatibility)
