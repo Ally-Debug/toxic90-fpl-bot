@@ -71,16 +71,21 @@ def get_db_connection(db_url):
     """
     Establishes connection to Neon PostgreSQL using psycopg2-binary or pg8000.
     """
-    # 1. Try psycopg2 (natively supports postgresql:// with poolers, SSL and channel_binding)
+    if ":***" in db_url or ":****" in db_url:
+        raise ValueError("DATABASE_URL contains literal asterisks (***). Please copy the connection string from Neon with the password revealed (click 'Show password' in Neon console).")
+
+    clean_url = db_url.replace("&channel_binding=require", "").replace("channel_binding=require&", "").replace("?channel_binding=require", "")
+
+    # 1. Try psycopg2 (natively supports postgresql:// with poolers and SSL options)
     try:
         import psycopg2
-        return psycopg2.connect(db_url)
-    except Exception:
-        pass
+        return psycopg2.connect(clean_url)
+    except Exception as e_psycopg2:
+        print(f"psycopg2 notice: {e_psycopg2}")
 
     # 2. Fallback to pg8000
     import urllib.parse
-    parsed = urllib.parse.urlparse(db_url)
+    parsed = urllib.parse.urlparse(clean_url)
     import pg8000.dbapi
     return pg8000.dbapi.connect(
         user=parsed.username,
