@@ -17,7 +17,7 @@ jobs:
 
       - name: Install System Dependencies & DB Driver
         run: |
-          pip install --no-cache-dir pg8000
+          pip install --no-cache-dir psycopg2-binary pg8000
 
       - name: Dispatch Newsletter Email
         env:

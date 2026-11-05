@@ -67,6 +67,30 @@ def fetch_json(url, retries=4, delay=2):
 # ==========================================
 # NEON DB SUBSCRIBER MANAGEMENT
 # ==========================================
+def get_db_connection(db_url):
+    """
+    Establishes connection to Neon PostgreSQL using psycopg2-binary or pg8000.
+    """
+    # 1. Try psycopg2 (natively supports postgresql:// with poolers, SSL and channel_binding)
+    try:
+        import psycopg2
+        return psycopg2.connect(db_url)
+    except Exception:
+        pass
+
+    # 2. Fallback to pg8000
+    import urllib.parse
+    parsed = urllib.parse.urlparse(db_url)
+    import pg8000.dbapi
+    return pg8000.dbapi.connect(
+        user=parsed.username,
+        password=parsed.password,
+        host=parsed.hostname,
+        port=parsed.port or 5432,
+        database=parsed.path.lstrip("/"),
+        ssl_context=ssl.create_default_context()
+    )
+
 def get_newsletter_recipients():
     """
     Retrieves active subscriber email addresses from Neon DB 'newsletter' table.
@@ -74,17 +98,7 @@ def get_newsletter_recipients():
     """
     if DATABASE_URL:
         try:
-            import urllib.parse
-            parsed = urllib.parse.urlparse(DATABASE_URL)
-            import pg8000.dbapi
-            conn = pg8000.dbapi.connect(
-                user=parsed.username,
-                password=parsed.password,
-                host=parsed.hostname,
-                port=parsed.port or 5432,
-                database=parsed.path.lstrip("/"),
-                ssl_context=ssl.create_default_context()
-            )
+            conn = get_db_connection(DATABASE_URL)
             cur = conn.cursor()
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS newsletter (
@@ -137,17 +151,7 @@ def register_subscriber_in_db(email, fpl_team_id):
         return False
 
     try:
-        import urllib.parse
-        parsed = urllib.parse.urlparse(DATABASE_URL)
-        import pg8000.dbapi
-        conn = pg8000.dbapi.connect(
-            user=parsed.username,
-            password=parsed.password,
-            host=parsed.hostname,
-            port=parsed.port or 5432,
-            database=parsed.path.lstrip("/"),
-            ssl_context=ssl.create_default_context()
-        )
+        conn = get_db_connection(DATABASE_URL)
         cur = conn.cursor()
         cur.execute("""
             CREATE TABLE IF NOT EXISTS newsletter (
@@ -178,6 +182,7 @@ def register_subscriber_in_db(email, fpl_team_id):
         return True
     except Exception as e:
         print(f"❌ Database error registering subscriber: {e}")
+        return False
         return False
 
 # ==========================================
