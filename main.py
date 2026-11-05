@@ -11,8 +11,11 @@ from newsletter_builder import render_newsletter_html
 
 # Vercel Serverless Function entrypoint export
 try:
+    from app import app as app, application as application
     from api.subscribe import handler as handler
 except Exception:
+    app = None
+    application = None
     handler = None
 
 CTX = ssl.create_default_context()
@@ -834,6 +837,15 @@ if __name__ == "__main__":
         out_path = f"preview_gw{args.gw}.html"
         with open(out_path, "w", encoding="utf-8") as f:
             f.write(html)
-        print(f"Preview saved to {out_path} ({len(html)} bytes).")
+        # Also sync docs and public index for web archive
+        for p in (
+            os.path.join(DOCS_DIR, "index.html"),
+            os.path.join(DOCS_DIR, "archive", f"gw{args.gw}.html"),
+            os.path.join(PUBLIC_DIR, "index.html"),
+            os.path.join(PUBLIC_DIR, "archive", f"gw{args.gw}.html")
+        ):
+            with open(p, "w", encoding="utf-8") as f:
+                f.write(html)
+        print(f"Preview saved to {out_path} and synced to {DOCS_DIR}/ and {PUBLIC_DIR}/ ({len(html)} bytes).")
     else:
         poll_cycle()

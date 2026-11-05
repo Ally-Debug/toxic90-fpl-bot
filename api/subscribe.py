@@ -94,13 +94,9 @@ class handler(BaseHTTPRequestHandler):
             # 4. Connect to Neon DB
             db_url = os.environ.get("DATABASE_URL") or os.environ.get("NEON_DB_URL")
             if not db_url:
-                # If database is not configured in serverless env, return verified FPL response
-                self._respond(200, {
-                    "success": True,
-                    "duplicate": False,
-                    "manager_name": manager_name,
-                    "team_name": team_name,
-                    "message": f"Verified manager {manager_name} ({team_name})!"
+                self._respond(500, {
+                    "success": False,
+                    "error": "DATABASE_URL is not configured in Vercel environment. Please add DATABASE_URL under Vercel Settings -> Environment Variables."
                 })
                 return
 
@@ -195,3 +191,9 @@ class handler(BaseHTTPRequestHandler):
         self.send_header('Access-Control-Allow-Origin', '*')
         self.end_headers()
         self.wfile.write(json.dumps(body).encode('utf-8'))
+
+try:
+    from app import app as app, application as application
+except Exception:
+    app = None
+    application = None

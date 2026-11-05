@@ -1,0 +1,6 @@
+__pycache__/
+*.py[cod]
+*$py.class
+preview_*.html
+.env
+.DS_Store
