@@ -110,11 +110,16 @@ def get_newsletter_recipients():
                 CREATE TABLE IF NOT EXISTS newsletter (
                     id SERIAL PRIMARY KEY,
                     manager_name VARCHAR(150),
+                    team_name VARCHAR(150),
                     fpl_team_id INTEGER NOT NULL UNIQUE,
                     email VARCHAR(255) UNIQUE,
                     leagues JSONB DEFAULT '[]'::jsonb
                 );
             """)
+            try:
+                cur.execute("ALTER TABLE newsletter ADD COLUMN IF NOT EXISTS team_name VARCHAR(150);")
+            except Exception:
+                pass
             conn.commit()
             cur.execute("SELECT email FROM newsletter WHERE email IS NOT NULL AND email != '';")
             rows = cur.fetchall()
@@ -137,8 +142,8 @@ def get_newsletter_recipients():
 
 def sync_leagues_for_manager(fpl_team_id):
     """
-    Fetches official leagues for a given FPL team ID from official FPL API
-    and updates the 'leagues' JSONB column in Neon DB 'newsletter' table.
+    Fetches official leagues and team name for a given FPL team ID from official FPL API
+    and updates the 'leagues' JSONB and 'team_name' columns in Neon DB 'newsletter' table.
     If fpl_team_id is 'all', syncs leagues for all managers in the newsletter table.
     """
     if not DATABASE_URL:
@@ -147,6 +152,11 @@ def sync_leagues_for_manager(fpl_team_id):
         
     conn = get_db_connection(DATABASE_URL)
     cur = conn.cursor()
+    try:
+        cur.execute("ALTER TABLE newsletter ADD COLUMN IF NOT EXISTS team_name VARCHAR(150);")
+        conn.commit()
+    except Exception:
+        pass
     
     # If 'all', query all team IDs in newsletter
     if str(fpl_team_id).lower() == 'all':
@@ -158,12 +168,13 @@ def sync_leagues_for_manager(fpl_team_id):
         if not targets:
             targets = [(int(fpl_team_id), "Unknown")]
             
-    print(f"--> Syncing leagues for {len(targets)} manager(s)...")
+    print(f"--> Syncing leagues and team names for {len(targets)} manager(s)...")
     for tid, m_name in targets:
         try:
-            print(f"Fetching leagues from FPL for Team ID {tid} ({m_name})...")
+            print(f"Fetching data from FPL for Team ID {tid} ({m_name})...")
             url = f"https://fantasy.premierleague.com/api/entry/{tid}/"
             data = fetch_json(url)
+            fpl_team_name = data.get("name", "")
             classic_leagues = data.get("leagues", {}).get("classic", [])
             h2h_leagues = data.get("leagues", {}).get("h2h", [])
             
@@ -176,17 +187,18 @@ def sync_leagues_for_manager(fpl_team_id):
             # Update the newsletter table
             cur.execute("""
                 UPDATE newsletter 
-                SET leagues = %s
+                SET leagues = %s,
+                    team_name = COALESCE(NULLIF(%s, ''), team_name)
                 WHERE fpl_team_id = %s;
-            """, (leagues_json, tid))
-            print(f"✅ Updated leagues for {m_name} (Team ID: {tid}): {len(classic_leagues)} Classic, {len(h2h_leagues)} H2H.")
+            """, (leagues_json, fpl_team_name, tid))
+            print(f"✅ Updated {m_name} (Team: '{fpl_team_name}', ID: {tid}): {len(classic_leagues)} Classic, {len(h2h_leagues)} H2H.")
         except Exception as e:
             print(f"❌ Failed to fetch/update leagues for Team ID {tid}: {e}")
             
     conn.commit()
     cur.close()
     conn.close()
-    print("League synchronization complete!")
+    print("League and team name synchronization complete!")
     return True
 
 def seed_toxic90_managers():
