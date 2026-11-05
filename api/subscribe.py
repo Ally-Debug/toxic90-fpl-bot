@@ -91,7 +91,7 @@ class handler(BaseHTTPRequestHandler):
             leagues = entry_data.get("leagues", {}).get("classic", [])
             leagues_json = json.dumps([{"id": l["id"], "name": l["name"]} for l in leagues[:10]])
 
-            # 4. Connect to Neon DB
+            # 4. Connect to Neon DB via Neon Serverless HTTP API
             db_url = os.environ.get("DATABASE_URL") or os.environ.get("NEON_DB_URL")
             if not db_url:
                 self._respond(500, {
@@ -101,22 +101,21 @@ class handler(BaseHTTPRequestHandler):
                 return
 
             clean_url = db_url.replace("&channel_binding=require", "").replace("channel_binding=require&", "").replace("?channel_binding=require", "")
-            try:
-                import psycopg2
-                conn = psycopg2.connect(clean_url)
-            except Exception:
-                import pg8000.dbapi
+            
+            def run_neon_query(sql_str):
                 p = urllib.parse.urlparse(clean_url)
-                conn = pg8000.dbapi.connect(
-                    user=p.username, password=p.password, host=p.hostname,
-                    port=p.port or 5432, database=p.path.lstrip("/"),
-                    ssl_context=ssl.create_default_context()
-                )
-
-            cur = conn.cursor()
+                neon_url = f"https://{p.hostname}/sql"
+                req_headers = {
+                    "Neon-Connection-String": clean_url,
+                    "Content-Type": "application/json"
+                }
+                body_payload = json.dumps({"query": sql_str}).encode("utf-8")
+                req = urllib.request.Request(neon_url, data=body_payload, headers=req_headers)
+                with urllib.request.urlopen(req, context=CTX, timeout=10) as r:
+                    return json.loads(r.read().decode("utf-8"))
 
             # Ensure table structure
-            cur.execute("""
+            run_neon_query("""
                 CREATE TABLE IF NOT EXISTS newsletter (
                     id SERIAL PRIMARY KEY,
                     manager_name VARCHAR(150),
@@ -128,25 +127,29 @@ class handler(BaseHTTPRequestHandler):
             """)
 
             # 5. Check Global 50-Submissions Cap
-            cur.execute("SELECT COUNT(*) FROM newsletter WHERE email IS NOT NULL AND email != '';")
-            count = cur.fetchone()[0]
-            if count >= 50:
-                cur.close()
-                conn.close()
+            count_res = run_neon_query("SELECT COUNT(*) FROM newsletter WHERE email IS NOT NULL AND email != '';")
+            total_active = int(count_res["rows"][0]["count"])
+            if total_active >= 50:
                 self._respond(403, {"success": False, "error": "Submission cap of 50 subscribers has been reached. Form is now closed."})
                 return
 
             # 6. Check Duplicate: If email, team ID, or team name already exists, REJECT
-            cur.execute("""
+            email_esc = email.replace("'", "''")
+            team_name_esc = team_name.replace("'", "''") if team_name else ""
+            dup_sql = f"""
                 SELECT id, manager_name, team_name, email, fpl_team_id 
                 FROM newsletter 
-                WHERE LOWER(TRIM(COALESCE(email, ''))) = LOWER(TRIM(%s))
-                   OR fpl_team_id = %s
-                   OR (team_name IS NOT NULL AND team_name != '' AND LOWER(TRIM(team_name)) = LOWER(TRIM(%s)));
-            """, (email, team_id_int, team_name))
-            existing = cur.fetchone()
-            if existing:
-                ex_id, ex_mgr, ex_team, ex_email, ex_tid = existing
+                WHERE LOWER(TRIM(COALESCE(email, ''))) = '{email_esc}'
+                   OR fpl_team_id = {team_id_int}
+                   OR (team_name IS NOT NULL AND team_name != '' AND LOWER(TRIM(team_name)) = '{team_name_esc}');
+            """
+            dup_res = run_neon_query(dup_sql)
+            if dup_res.get("rows"):
+                existing = dup_res["rows"][0]
+                ex_mgr = existing.get("manager_name", "Manager")
+                ex_email = existing.get("email") or ""
+                ex_tid = existing.get("fpl_team_id")
+                ex_team = existing.get("team_name") or ""
                 reasons = []
                 if ex_email and ex_email.strip().lower() == email:
                     reasons.append(f"email '{email}' is already registered to manager '{ex_mgr}'")
@@ -155,8 +158,6 @@ class handler(BaseHTTPRequestHandler):
                 if ex_team and team_name and ex_team.strip().lower() == team_name.strip().lower():
                     reasons.append(f"team name '{team_name}' is already registered to manager '{ex_mgr}'")
                 reason_str = " and ".join(reasons) if reasons else f"a record already exists for '{ex_mgr}'"
-                cur.close()
-                conn.close()
                 self._respond(409, {
                     "success": False,
                     "duplicate": True,
@@ -166,13 +167,13 @@ class handler(BaseHTTPRequestHandler):
                 return
 
             # 7. Insert New Verified User
-            cur.execute("""
+            mgr_esc = manager_name.replace("'", "''")
+            leagues_esc = leagues_json.replace("'", "''")
+            insert_sql = f"""
                 INSERT INTO newsletter (manager_name, team_name, fpl_team_id, email, leagues)
-                VALUES (%s, %s, %s, %s, %s);
-            """, (manager_name, team_name, team_id_int, email, leagues_json))
-            conn.commit()
-            cur.close()
-            conn.close()
+                VALUES ('{mgr_esc}', '{team_name_esc}', {team_id_int}, '{email_esc}', '{leagues_esc}'::jsonb);
+            """
+            run_neon_query(insert_sql)
 
             self._respond(200, {
                 "success": True,
