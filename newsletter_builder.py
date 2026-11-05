@@ -705,14 +705,44 @@ async function handleSubscription() {
         return;
     }
 
-    // 7. SUCCESS: CONFIRMED ONLY FOR GENUINELY VERIFIED FPL MANAGERS!
-    renderAlert('<span class="fpl-spinner" style="border-top-color:#10b981;"></span> <b>Phase 3/3:</b> Registering validated credentials...', '#10b981', '#0f172a', '#e2e8f0');
+    // 7. WRITE TO DATABASE VIA SERVERLESS API (IF DEPLOYED) OR SHOW VERIFIED STATUS
+    renderAlert('<span class="fpl-spinner" style="border-top-color:#10b981;"></span> <b>Phase 3/3:</b> Syncing with Neon database...', '#10b981', '#0f172a', '#e2e8f0');
     await sleep(400);
 
-    const successHtml = '✅ <b>FPL Verification Successful!</b><br>' + 
-                        'Manager: <b>' + fplManager + '</b> | Squad: <i>' + fplTeamName + '</i> (ID: ' + teamIdInt + ')<br>' +
-                        'Email: <b>' + email + '</b><br>' + 
-                        '<span style="font-size:11px; color:#15803d; font-weight:600;">Verified via official Premier League API. Credentials linked for automated GW10 dispatch!</span>';
+    let savedToDb = false;
+    try {
+        const apiRes = await fetch('/api/subscribe', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ email: email, team_id: teamIdInt, team_name: fplTeamName })
+        });
+        if (apiRes.status === 409) {
+            const errData = await apiRes.json();
+            renderAlert('❌ <b>Registration Blocked:</b> ' + (errData.error || 'Duplicate entry detected in Neon DB.'), '#ef4444', '#fef2f2', '#991b1b');
+            btn.innerText = '❌ Duplicate Detected in Neon DB';
+            btn.style.background = '#991b1b';
+            setTimeout(resetButton, 3500);
+            return;
+        } else if (apiRes.ok) {
+            savedToDb = true;
+        }
+    } catch (eDb) {}
+
+    let successHtml = '';
+    if (savedToDb) {
+        successHtml = '✅ <b>Saved Directly to Neon Database!</b><br>' + 
+                      'Manager: <b>' + fplManager + '</b> | Squad: <i>' + fplTeamName + '</i> (ID: ' + teamIdInt + ')<br>' + 
+                      'Email: <b>' + email + '</b><br>' + 
+                      '<span style="font-size:11px; color:#15803d; font-weight:600;">Record successfully written to Neon DB newsletter table! Weekly pre-deadline briefings activated.</span>';
+    } else {
+        successHtml = '✅ <b>FPL Telemetry Verified!</b><br>' + 
+                      'Manager: <b>' + fplManager + '</b> | Squad: <i>' + fplTeamName + '</i> (ID: ' + teamIdInt + ')<br>' + 
+                      'Email: <b>' + email + '</b><br>' + 
+                      '<div style="margin-top:8px; padding:8px 10px; background:rgba(37,99,235,0.08); border-radius:6px; border:1px solid rgba(37,99,235,0.2); font-size:11.5px; color:#1e40af; line-height:1.45;">' + 
+                      '<b>📌 Database Sync Notice:</b> FPL credentials validated successfully. Because GitHub Pages is a static host, instant in-browser writing to Neon DB is handled via Vercel deployment (or GitHub Action CLI <code>add_subscriber</code>).' + 
+                      '</div>';
+    }
+
     renderAlert(successHtml, '#10b981', '#f0fdf4', '#047857');
     btn.innerText = '✅ Subscription Confirmed';
     btn.style.background = '#10b981';

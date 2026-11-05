@@ -1,0 +1,9 @@
+{
+  "version": 2,
+  "rewrites": [
+    { "source": "/api/subscribe", "destination": "/api/subscribe.py" },
+    { "source": "/", "destination": "/docs/index.html" },
+    { "source": "/archive/(.*)", "destination": "/docs/archive/$1" },
+    { "source": "/(.*)", "destination": "/docs/$1" }
+  ]
+}
