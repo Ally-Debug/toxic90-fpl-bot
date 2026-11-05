@@ -1,0 +1,72 @@
+name: Toxic 90 Interactive CLI
+
+on:
+  workflow_dispatch:
+    inputs:
+      command:
+        description: 'CLI Command / Action'
+        required: true
+        default: 'preview'
+        type: choice
+        options:
+          - preview
+          - scout
+          - locked
+          - settled
+          - add_subscriber
+      gameweek:
+        description: 'Gameweek Number'
+        required: false
+        default: '10'
+      subscriber_email:
+        description: 'Subscriber Email (only if adding subscriber)'
+        required: false
+        default: ''
+      subscriber_team_id:
+        description: 'Subscriber FPL Team ID (only if adding subscriber)'
+        required: false
+        default: ''
+
+jobs:
+  run-cli:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y poppler-utils
+          pip install --no-cache-dir pg8000
+
+      - name: Execute CLI
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          SMTP_SERVER: smtp.gmail.com
+          SMTP_PORT: 587
+          SMTP_USERNAME: ${{ secrets.SMTP_USERNAME }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          EMAIL_RECIPIENT: ${{ secrets.EMAIL_RECIPIENT }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL || secrets.NEON_DB_URL }}
+        run: |
+          if [ "${{ github.event.inputs.command }}" = "add_subscriber" ]; then
+            python main.py --add-subscriber "${{ github.event.inputs.subscriber_email }}" "${{ github.event.inputs.subscriber_team_id }}"
+          else
+            python main.py --mode "${{ github.event.inputs.command }}" --gw "${{ github.event.inputs.gameweek }}"
+          fi
+
+      - name: Persist State & Web Archive
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git add state.json docs/
+          git diff --quiet && git diff --staged --quiet || (git commit -m "chore: persist CLI state updates [skip ci]" && git push)

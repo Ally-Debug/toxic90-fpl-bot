@@ -1,4 +1,4 @@
-import urllib.request, json, ssl, time, os, sys, uuid, shutil, subprocess
+import urllib.request, json, ssl, time, os, sys, uuid, shutil, subprocess, argparse
 from datetime import datetime, timezone
 import smtplib
 from email.mime.multipart import MIMEMultipart
@@ -16,7 +16,7 @@ CTX.verify_mode = ssl.CERT_NONE
 CLASSIC_LEAGUE_ID = 19441
 H2H_LEAGUE_ID = 1069869
 
-# Credentials & Configuration (Loaded strictly from GitHub Secrets)
+# Credentials & Configuration (Loaded strictly from Environment / GitHub Secrets)
 BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 CHAT_IDS = [cid.strip() for cid in os.environ.get("TELEGRAM_CHAT_ID", "").split(",") if cid.strip()]
 
@@ -25,6 +25,7 @@ SMTP_PORT = int(os.environ.get("SMTP_PORT", 587))
 SMTP_USERNAME = os.environ.get("SMTP_USERNAME", "")
 SMTP_PASSWORD = os.environ.get("SMTP_PASSWORD", "")
 EMAIL_RECIPIENT = os.environ.get("EMAIL_RECIPIENT", "")
+DATABASE_URL = os.environ.get("DATABASE_URL") or os.environ.get("NEON_DB_URL", "")
 
 STATE_FILE = "state.json"
 CACHE_DIR = "/tmp/fpl_cache"
@@ -64,6 +65,122 @@ def fetch_json(url, retries=4, delay=2):
             time.sleep(delay * (i + 1))
 
 # ==========================================
+# NEON DB SUBSCRIBER MANAGEMENT
+# ==========================================
+def get_newsletter_recipients():
+    """
+    Retrieves active subscriber email addresses from Neon DB 'newsletter' table.
+    Falls back gracefully to EMAIL_RECIPIENT secret if DATABASE_URL is not set.
+    """
+    if DATABASE_URL:
+        try:
+            import urllib.parse
+            parsed = urllib.parse.urlparse(DATABASE_URL)
+            import pg8000.dbapi
+            conn = pg8000.dbapi.connect(
+                user=parsed.username,
+                password=parsed.password,
+                host=parsed.hostname,
+                port=parsed.port or 5432,
+                database=parsed.path.lstrip("/"),
+                ssl_context=ssl.create_default_context()
+            )
+            cur = conn.cursor()
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS newsletter (
+                    id SERIAL PRIMARY KEY,
+                    manager_name VARCHAR(150),
+                    fpl_team_id INTEGER NOT NULL,
+                    email VARCHAR(255) NOT NULL UNIQUE,
+                    leagues JSONB DEFAULT '[]'::jsonb,
+                    is_active BOOLEAN DEFAULT TRUE,
+                    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+                );
+            """)
+            conn.commit()
+            cur.execute("SELECT email FROM newsletter WHERE is_active = TRUE;")
+            rows = cur.fetchall()
+            cur.close()
+            conn.close()
+            db_emails = [r[0].strip() for r in rows if r and r[0]]
+            if db_emails:
+                print(f"✅ Loaded {len(db_emails)} subscriber(s) from Neon DB 'newsletter' table.")
+                return db_emails
+        except Exception as e:
+            print(f"⚠️ Neon DB lookup notice ({e}). Falling back to EMAIL_RECIPIENT secret.")
+
+    # Fallback to comma-separated secret
+    secret_emails = [r.strip() for r in EMAIL_RECIPIENT.split(",") if r.strip()]
+    if secret_emails:
+        print(f"ℹ️ Loaded {len(secret_emails)} subscriber(s) from EMAIL_RECIPIENT secret.")
+    return secret_emails
+
+def register_subscriber_in_db(email, fpl_team_id):
+    """
+    Registers a new manager in Neon DB with live validation against FPL API.
+    """
+    if not DATABASE_URL:
+        print("❌ DATABASE_URL or NEON_DB_URL is not configured in environment.")
+        return False
+        
+    print(f"--> Validating FPL Team ID {fpl_team_id} with official FPL API...")
+    try:
+        entry_data = fetch_json(f"https://fantasy.premierleague.com/api/entry/{fpl_team_id}/")
+        first_name = entry_data.get("player_first_name", "")
+        last_name = entry_data.get("player_last_name", "")
+        manager_name = f"{first_name} {last_name}".strip() or entry_data.get("name", "FPL Manager")
+        leagues = entry_data.get("leagues", {}).get("classic", [])
+        leagues_json = json.dumps([{"id": l["id"], "name": l["name"]} for l in leagues[:10]])
+    except Exception as e:
+        print(f"❌ Failed to verify FPL Team ID {fpl_team_id}: {e}")
+        return False
+
+    try:
+        import urllib.parse
+        parsed = urllib.parse.urlparse(DATABASE_URL)
+        import pg8000.dbapi
+        conn = pg8000.dbapi.connect(
+            user=parsed.username,
+            password=parsed.password,
+            host=parsed.hostname,
+            port=parsed.port or 5432,
+            database=parsed.path.lstrip("/"),
+            ssl_context=ssl.create_default_context()
+        )
+        cur = conn.cursor()
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS newsletter (
+                id SERIAL PRIMARY KEY,
+                manager_name VARCHAR(150),
+                fpl_team_id INTEGER NOT NULL,
+                email VARCHAR(255) NOT NULL UNIQUE,
+                leagues JSONB DEFAULT '[]'::jsonb,
+                is_active BOOLEAN DEFAULT TRUE,
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+            );
+        """)
+        cur.execute("""
+            INSERT INTO newsletter (manager_name, fpl_team_id, email, leagues, is_active)
+            VALUES (%s, %s, %s, %s, TRUE)
+            ON CONFLICT (email) DO UPDATE 
+            SET manager_name = EXCLUDED.manager_name,
+                fpl_team_id = EXCLUDED.fpl_team_id,
+                leagues = EXCLUDED.leagues,
+                is_active = TRUE,
+                updated_at = CURRENT_TIMESTAMP;
+        """, (manager_name, fpl_team_id, email, leagues_json))
+        conn.commit()
+        cur.close()
+        conn.close()
+        print(f"✅ Successfully registered subscriber '{manager_name}' <{email}> in Neon DB!")
+        return True
+    except Exception as e:
+        print(f"❌ Database error registering subscriber: {e}")
+        return False
+
+# ==========================================
 # DISPATCHERS (TELEGRAM & EMAIL)
 # ==========================================
 def send_telegram_photo(image_path, caption=""):
@@ -98,22 +215,20 @@ def send_telegram_photo(image_path, caption=""):
     return success
 
 def send_html_email(subject, html_content):
+    recipients = get_newsletter_recipients()
     print(f"--> Initiating Outbound Email Dispatch...")
     print(f"  SMTP Server: {SMTP_SERVER}:{SMTP_PORT}")
     print(f"  SMTP Username: '{SMTP_USERNAME}'")
     print(f"  SMTP Password configured: {'YES' if SMTP_PASSWORD else 'NO (EMPTY SECRET!)'}")
-    print(f"  Email Recipient(s): '{EMAIL_RECIPIENT}'")
+    print(f"  Recipient Count: {len(recipients)}")
     
     if not SMTP_PASSWORD or not SMTP_USERNAME:
-        err_msg = "❌ CRITICAL: SMTP_USERNAME or SMTP_PASSWORD is missing in GitHub Repository Secrets!"
-        print(err_msg)
-        raise ValueError(err_msg)
+        print("[EMAIL DRY RUN] SMTP credentials not fully configured; skipping email transport.")
+        return True
         
-    recipients = [r.strip() for r in EMAIL_RECIPIENT.split(",") if r.strip()]
     if not recipients:
-        err_msg = "❌ CRITICAL: EMAIL_RECIPIENT secret is empty!"
-        print(err_msg)
-        raise ValueError(err_msg)
+        print("⚠️ Warning: No email recipients found in Neon DB or EMAIL_RECIPIENT secret.")
+        return False
 
     msg = MIMEMultipart("alternative")
     msg["Subject"] = subject
@@ -127,7 +242,7 @@ def send_html_email(subject, html_content):
             server.starttls()
             server.login(SMTP_USERNAME, SMTP_PASSWORD)
             server.sendmail(SMTP_USERNAME, recipients, msg.as_string())
-            print(f"✅ Email successfully delivered to {recipients}")
+            print(f"✅ Email successfully delivered to {len(recipients)} recipient(s): {recipients}")
             return True
     except Exception as e:
         print(f"❌ SMTP Dispatch Failed: {e}")
@@ -137,7 +252,10 @@ def send_email_with_card_attachments(subject, caption, image_paths):
     if not SMTP_PASSWORD or not SMTP_USERNAME:
         print(f"[EMAIL CARDS DRY RUN] Subject: {subject} | Images: {image_paths}")
         return True
-    recipients = [r.strip() for r in EMAIL_RECIPIENT.split(",") if r.strip()]
+    recipients = get_newsletter_recipients()
+    if not recipients:
+        return True
+        
     msg = MIMEMultipart("related")
     msg["Subject"] = subject
     msg["From"] = f"Toxic 90 FPL <{SMTP_USERNAME}>"
@@ -169,7 +287,7 @@ def send_email_with_card_attachments(subject, caption, image_paths):
             server.starttls()
             server.login(SMTP_USERNAME, SMTP_PASSWORD)
             server.sendmail(SMTP_USERNAME, recipients, msg.as_string())
-            print(f"Cards email delivered to {recipients}")
+            print(f"Cards email delivered to {len(recipients)} recipient(s).")
             return True
     except Exception as e:
         print(f"Cards email error: {e}")
@@ -179,7 +297,7 @@ def send_email_with_card_attachments(subject, caption, image_paths):
 # TRIGGER 0: PRE-DEADLINE SCOUT NEWSLETTER (T - 3 HOURS)
 # STRICT CHANNEL SEPARATION: EMAIL ONLY + GITHUB PAGES ARCHIVE
 # ==========================================
-def trigger_newsletter(gw):
+def trigger_newsletter(gw=10):
     print(f"\n--> Executing Trigger 0: GW{gw} 3-HOUR PRE-DEADLINE SCOUT NEWSLETTER...")
     data = run_recommendation_engine()
     html_content = render_newsletter_html(data)
@@ -201,8 +319,10 @@ def trigger_newsletter(gw):
 # TRIGGER 1: POST-DEADLINE ARTIFACTS 1 & 2 (T + 20 MINS)
 # STRICT CHANNEL RULE: POST HIGH-RES IMAGES TO TELEGRAM
 # ==========================================
-def trigger_deadline(gw, bs):
+def trigger_deadline(gw, bs=None):
     print(f"\n--> Executing Trigger 1: GW{gw} LOCKED (20 mins post-deadline)...")
+    if bs is None:
+        bs = fetch_json("https://fantasy.premierleague.com/api/bootstrap-static/")
     elements_map = {el["id"]: el["web_name"] for el in bs["elements"]}
     
     # 1. Artifact 1: Top 5 & Captains
@@ -261,7 +381,7 @@ def trigger_deadline(gw, bs):
     send_telegram_photo(png_1, f"🏆 <b>Toxic 90 ☢️ | GW {gw} Locked</b>\nTop 5 Managers, Captains & Active Chips.")
     send_telegram_photo(png_2, f"⚔️ <b>Toxic 90 ☢️ | GW {gw} Head-to-Head Matchups</b>\nFull fixture lineup for the gameweek.")
     
-    # Dispatch Email with Attached Cards (Safe execution - won't block Telegram)
+    # Dispatch Email with Attached Cards
     try:
         send_email_with_card_attachments(
             f"[Toxic 90] Game Week {gw} Locked: Top 5 Captains & H2H Matchups",
@@ -275,8 +395,10 @@ def trigger_deadline(gw, bs):
 # TRIGGER 2: POST-GAMEWEEK FINAL SETTLEMENT (ARTIFACTS 3 & 4)
 # CONDITION: finished == True AND data_checked == True
 # ==========================================
-def trigger_over(gw, bs):
+def trigger_over(gw, bs=None):
     print(f"\n--> Executing Trigger 2: GW{gw} CONCLUDED (Official settlement complete)...")
+    if bs is None:
+        bs = fetch_json("https://fantasy.premierleague.com/api/bootstrap-static/")
     
     # 1. Classic Standings
     c_url = f"https://fantasy.premierleague.com/api/leagues-classic/{CLASSIC_LEAGUE_ID}/standings/"
@@ -354,7 +476,7 @@ def trigger_over(gw, bs):
     send_telegram_photo(png_3, f"🏆 <b>Toxic 90 ☢️ | GW {gw} Final Standings</b>\nOfficial data settled, auto-subs & bonus points applied.")
     send_telegram_photo(png_4, f"⚔️ <b>Toxic 90 ☢️ | GW {gw} Head-to-Head Results</b>\nFinal match scorelines and updated table.")
     
-    # Dispatch Email with Attached Cards (Safe execution - won't block Telegram)
+    # Dispatch Email with Attached Cards
     try:
         send_email_with_card_attachments(
             f"[Toxic 90] Game Week {gw} Final Standings & H2H Results",
@@ -442,18 +564,46 @@ def poll_cycle():
 
     print("Poll cycle finished.")
 
+# ==========================================
+# CLI ENTRY POINT & WORKFLOW RUNNER
+# ==========================================
 if __name__ == "__main__":
-    force = os.environ.get("FORCE_TRIGGER", "").strip().lower()
-    if force == "newsletter":
-        print("FORCE TRIGGER: Executing GW10 Pre-Deadline Scout Newsletter...")
-        trigger_newsletter(10)
-    elif force == "deadline":
-        bs = fetch_json("https://fantasy.premierleague.com/api/bootstrap-static/")
-        print("FORCE TRIGGER: Executing GW10 Post-Deadline Artifacts 1 & 2...")
-        trigger_deadline(10, bs)
-    elif force == "concluded":
-        bs = fetch_json("https://fantasy.premierleague.com/api/bootstrap-static/")
-        print("FORCE TRIGGER: Executing GW9 Concluded Artifacts 3 & 4...")
-        trigger_over(9, bs)
+    parser = argparse.ArgumentParser(description="Toxic 90 FPL Autonomous Engine & CLI")
+    parser.add_argument("--mode", "-m", choices=["poll", "scout", "newsletter", "locked", "deadline", "settled", "concluded", "preview"], default="poll", help="Action mode to execute")
+    parser.add_argument("--gw", type=int, default=10, help="Gameweek ID for manual runs")
+    parser.add_argument("--add-subscriber", nargs=2, metavar=("EMAIL", "FPL_TEAM_ID"), help="Register a new subscriber in Neon DB")
+    
+    args, unknown = parser.parse_known_args()
+
+    # Priority 1: Direct subscriber addition via CLI
+    if args.add_subscriber:
+        sub_email, sub_fpl_id = args.add_subscriber
+        register_subscriber_in_db(sub_email, int(sub_fpl_id))
+        sys.exit(0)
+
+    # Priority 2: Check FORCE_TRIGGER environment variable (for GitHub Actions backward compatibility)
+    force_env = os.environ.get("FORCE_TRIGGER", "").strip().lower()
+    selected_mode = args.mode
+    if force_env and force_env != "poll_cycle" and force_env != "none":
+        selected_mode = force_env
+
+    # Priority 3: Execute selected mode
+    if selected_mode in ["scout", "newsletter"]:
+        print(f"CLI: Executing Gameweek {args.gw} Pre-Deadline Scout Newsletter...")
+        trigger_newsletter(args.gw)
+    elif selected_mode in ["locked", "deadline"]:
+        print(f"CLI: Executing Gameweek {args.gw} Post-Deadline Cards (Artifacts 1 & 2)...")
+        trigger_deadline(args.gw)
+    elif selected_mode in ["settled", "concluded"]:
+        print(f"CLI: Executing Gameweek {args.gw-1 if args.gw > 1 else 9} Final Settlement Cards (Artifacts 3 & 4)...")
+        trigger_over(args.gw - 1 if args.gw > 1 else 9)
+    elif selected_mode == "preview":
+        print(f"CLI: Generating local preview for GW{args.gw}...")
+        data = run_recommendation_engine()
+        html = render_newsletter_html(data)
+        out_path = f"preview_gw{args.gw}.html"
+        with open(out_path, "w", encoding="utf-8") as f:
+            f.write(html)
+        print(f"Preview saved to {out_path} ({len(html)} bytes).")
     else:
         poll_cycle()

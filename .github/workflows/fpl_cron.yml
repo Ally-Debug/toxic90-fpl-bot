@@ -4,10 +4,10 @@ on:
   schedule:
     # Runs every hour at the top of the hour (24 runs/day = 720 mins/month, well within 2,000 free minutes)
     - cron: '0 * * * *'
-  workflow_dispatch: # Allows manual trigger anytime from GitHub UI
+  workflow_dispatch: # Allows manual trigger anytime from GitHub UI / gh CLI
     inputs:
-      force_trigger:
-        description: 'Action to execute'
+      mode:
+        description: 'Action mode to execute'
         required: false
         default: 'newsletter'
         type: choice
@@ -16,6 +16,10 @@ on:
           - deadline
           - concluded
           - poll_cycle
+      gameweek:
+        description: 'Gameweek ID (optional, defaults to 10)'
+        required: false
+        default: '10'
 
 jobs:
   check-and-notify:
@@ -31,14 +35,15 @@ jobs:
         with:
           python-version: '3.10'
 
-      - name: Install System Dependencies (Poppler for PDF->PNG)
+      - name: Install System Dependencies & Database Driver
         run: |
           sudo apt-get update
           sudo apt-get install -y poppler-utils
+          pip install --no-cache-dir pg8000
 
-      - name: Run FPL Monitor
+      - name: Run FPL Monitor CLI
         env:
-          FORCE_TRIGGER: ${{ github.event.inputs.force_trigger || inputs.force_trigger }}
+          FORCE_TRIGGER: ${{ github.event.inputs.mode || inputs.mode || 'poll_cycle' }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           SMTP_SERVER: smtp.gmail.com
@@ -46,8 +51,9 @@ jobs:
           SMTP_USERNAME: ${{ secrets.SMTP_USERNAME }}
           SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
           EMAIL_RECIPIENT: ${{ secrets.EMAIL_RECIPIENT }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL || secrets.NEON_DB_URL }}
         run: |
-          python main.py
+          python main.py --gw ${{ github.event.inputs.gameweek || inputs.gameweek || '10' }}
 
       - name: Persist State & Web Archive
         run: |
