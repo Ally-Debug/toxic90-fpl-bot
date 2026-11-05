@@ -82,7 +82,7 @@ When a user subscribes with their email and FPL Team ID, the engine queries `htt
 All credentials and sensitive keys are managed strictly via GitHub Repository Secrets:
 
 * `TELEGRAM_BOT_TOKEN`: Telegram Bot API token.
-* `TELEGRAM_CHAT_ID`: Destination Telegram chat or group ID (`-1004385477776`).
+* `TELEGRAM_CHAT_ID`: Destination Telegram chat or group ID.
 * `SMTP_SERVER`: Outbound SMTP server (`smtp.gmail.com`).
 * `SMTP_PORT`: SMTP port (`587`).
 * `SMTP_USERNAME`: Sender email address.
