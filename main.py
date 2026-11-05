@@ -283,24 +283,45 @@ def seed_toxic90_managers():
 
 def register_subscriber_in_db(email, fpl_team_id):
     """
-    Registers a new manager in Neon DB with live validation against FPL API.
+    Registers a manager in Neon DB with live FPL API validation, duplicate prevention, and 50-subscriber global cap.
     """
-    if not DATABASE_URL:
-        print("❌ DATABASE_URL or NEON_DB_URL is not configured in environment.")
+    email = str(email).strip().lower()
+    # 1. Validate Email format
+    import re
+    if not re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", email):
+        print(f"❌ Invalid email format: '{email}'. Submission rejected.")
+        return False
+
+    # 2. Validate Team ID
+    try:
+        fpl_team_id_int = int(str(fpl_team_id).strip())
+        if fpl_team_id_int <= 0:
+            raise ValueError()
+    except Exception:
+        print(f"❌ Invalid FPL Team ID: '{fpl_team_id}'. Must be a positive integer.")
         return False
         
-    print(f"--> Validating FPL Team ID {fpl_team_id} with official FPL API...")
+    # 3. Verify with official FPL API
+    print(f"--> Validating FPL Team ID {fpl_team_id_int} with official Premier League API...")
     try:
-        entry_data = fetch_json(f"https://fantasy.premierleague.com/api/entry/{fpl_team_id}/")
+        entry_data = fetch_json(f"https://fantasy.premierleague.com/api/entry/{fpl_team_id_int}/")
         first_name = entry_data.get("player_first_name", "")
         last_name = entry_data.get("player_last_name", "")
         manager_name = f"{first_name} {last_name}".strip() or entry_data.get("name", "FPL Manager")
+        team_name = entry_data.get("name", "")
         leagues = entry_data.get("leagues", {}).get("classic", [])
         leagues_json = json.dumps([{"id": l["id"], "name": l["name"]} for l in leagues[:10]])
     except Exception as e:
-        print(f"❌ Failed to verify FPL Team ID {fpl_team_id}: {e}")
+        print(f"❌ FPL Team ID {fpl_team_id_int} does not exist on Fantasy Premier League: {e}")
         return False
 
+    print(f"✅ Verified FPL Manager: '{manager_name}' (Team: '{team_name}', ID: {fpl_team_id_int})")
+
+    if not DATABASE_URL:
+        print("❌ DATABASE_URL or NEON_DB_URL is not configured in environment.")
+        return False
+
+    # 4. Check Database: 50 Cap & Duplicate Handling
     try:
         conn = get_db_connection(DATABASE_URL)
         cur = conn.cursor()
@@ -308,28 +329,49 @@ def register_subscriber_in_db(email, fpl_team_id):
             CREATE TABLE IF NOT EXISTS newsletter (
                 id SERIAL PRIMARY KEY,
                 manager_name VARCHAR(150),
+                team_name VARCHAR(150),
                 fpl_team_id INTEGER NOT NULL UNIQUE,
                 email VARCHAR(255) UNIQUE,
                 leagues JSONB DEFAULT '[]'::jsonb
             );
         """)
+        
+        # Scenario 2: Duplicate Handling (If user/email already exists, do not create duplicate; keep existing)
         cur.execute("""
-            INSERT INTO newsletter (manager_name, fpl_team_id, email, leagues)
-            VALUES (%s, %s, %s, %s)
-            ON CONFLICT (fpl_team_id) DO UPDATE 
-            SET manager_name = EXCLUDED.manager_name,
-                email = EXCLUDED.email,
-                leagues = EXCLUDED.leagues;
-        """, (manager_name, fpl_team_id, email, leagues_json))
+            SELECT id, manager_name, team_name, email 
+            FROM newsletter 
+            WHERE fpl_team_id = %s OR email = %s;
+        """, (fpl_team_id_int, email))
+        existing = cur.fetchone()
+        if existing:
+            print(f"ℹ️ Duplicate detected: Team ID {fpl_team_id_int} or email '{email}' already registered for '{existing[1]}'. Existing entry preserved.")
+            cur.close()
+            conn.close()
+            return True
+
+        # Check Global 50-Submissions Cap
+        cur.execute("SELECT COUNT(*) FROM newsletter WHERE email IS NOT NULL AND email != '';")
+        active_count = cur.fetchone()[0]
+        if active_count >= 50:
+            print(f"🔒 Submission cap of 50 subscribers reached ({active_count}/50). New registration rejected.")
+            cur.close()
+            conn.close()
+            return False
+
+        # Scenario 3: New User Registration
+        cur.execute("""
+            INSERT INTO newsletter (manager_name, team_name, fpl_team_id, email, leagues)
+            VALUES (%s, %s, %s, %s, %s);
+        """, (manager_name, team_name, fpl_team_id_int, email, leagues_json))
         conn.commit()
         cur.close()
         conn.close()
-        print(f"✅ Successfully registered subscriber '{manager_name}' <{email}> in Neon DB!")
+        print(f"✅ Successfully registered new subscriber: '{manager_name}' (Team: '{team_name}', ID: {fpl_team_id_int}) <{email}> [{active_count + 1}/50]!")
         return True
     except Exception as e:
         print(f"❌ Database error registering subscriber: {e}")
         return False
-        return False
+        print(f"❌ Database error registering subscriber: {e}")
         return False
 
 # ==========================================
