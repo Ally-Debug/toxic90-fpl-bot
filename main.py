@@ -94,6 +94,7 @@ def get_db_connection(db_url):
 def get_newsletter_recipients():
     """
     Retrieves active subscriber email addresses from Neon DB 'newsletter' table.
+    Filters strictly for active subscribers with non-empty email addresses.
     Falls back gracefully to EMAIL_RECIPIENT secret if DATABASE_URL is not set.
     """
     if DATABASE_URL:
@@ -105,7 +106,7 @@ def get_newsletter_recipients():
                     id SERIAL PRIMARY KEY,
                     manager_name VARCHAR(150),
                     fpl_team_id INTEGER NOT NULL,
-                    email VARCHAR(255) NOT NULL UNIQUE,
+                    email VARCHAR(255) UNIQUE,
                     leagues JSONB DEFAULT '[]'::jsonb,
                     is_active BOOLEAN DEFAULT TRUE,
                     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
@@ -113,14 +114,16 @@ def get_newsletter_recipients():
                 );
             """)
             conn.commit()
-            cur.execute("SELECT email FROM newsletter WHERE is_active = TRUE;")
+            cur.execute("SELECT email FROM newsletter WHERE is_active = TRUE AND email IS NOT NULL AND email != '';")
             rows = cur.fetchall()
             cur.close()
             conn.close()
-            db_emails = [r[0].strip() for r in rows if r and r[0]]
+            db_emails = [r[0].strip() for r in rows if r and r[0] and r[0].strip()]
             if db_emails:
-                print(f"✅ Loaded {len(db_emails)} subscriber(s) from Neon DB 'newsletter' table.")
+                print(f"✅ Loaded {len(db_emails)} subscriber(s) from Neon DB 'newsletter' table: {db_emails}")
                 return db_emails
+            else:
+                print("ℹ️ Neon DB 'newsletter' table currently has no active email addresses.")
         except Exception as e:
             print(f"⚠️ Neon DB lookup notice ({e}). Falling back to EMAIL_RECIPIENT secret.")
 
@@ -129,6 +132,89 @@ def get_newsletter_recipients():
     if secret_emails:
         print(f"ℹ️ Loaded {len(secret_emails)} subscriber(s) from EMAIL_RECIPIENT secret.")
     return secret_emails
+
+def seed_toxic90_managers():
+    """
+    Fetches all Toxic 90 league managers from FPL API and populates the Neon DB 'newsletter' table
+    with manager_name, fpl_team_id, and email as NULL so the user can easily fill in emails.
+    """
+    if not DATABASE_URL:
+        print("❌ DATABASE_URL or NEON_DB_URL is not configured in environment.")
+        return False
+        
+    print("--> Fetching all Toxic 90 managers from official FPL API (Classic: 19441, H2H: 1069869)...")
+    all_mgrs = {}
+    for lid in [CLASSIC_LEAGUE_ID, H2H_LEAGUE_ID]:
+        is_h2h = (lid == H2H_LEAGUE_ID)
+        endpoint = f"https://fantasy.premierleague.com/api/leagues-h2h/{lid}/standings/" if is_h2h else f"https://fantasy.premierleague.com/api/leagues-classic/{lid}/standings/"
+        try:
+            data = fetch_json(endpoint)
+            for r in data.get("standings", {}).get("results", []):
+                eid = r.get("entry")
+                if not eid: continue
+                if eid not in all_mgrs:
+                    all_mgrs[eid] = {
+                        "team_id": eid,
+                        "name": r["player_name"],
+                        "entry_name": r["entry_name"]
+                    }
+        except Exception as e:
+            print(f"Warning fetching league {lid}: {e}")
+            
+    print(f"--> Found {len(all_mgrs)} unique managers across Toxic 90.")
+    try:
+        conn = get_db_connection(DATABASE_URL)
+        cur = conn.cursor()
+        # 1. Create table if needed
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS newsletter (
+                id SERIAL PRIMARY KEY,
+                manager_name VARCHAR(150),
+                fpl_team_id INTEGER NOT NULL,
+                email VARCHAR(255) UNIQUE,
+                leagues JSONB DEFAULT '[]'::jsonb,
+                is_active BOOLEAN DEFAULT FALSE,
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+            );
+        """)
+        # 2. Relax email constraint if it had NOT NULL
+        try:
+            cur.execute("ALTER TABLE newsletter ALTER COLUMN email DROP NOT NULL;")
+        except Exception:
+            pass
+        # 3. Ensure fpl_team_id is UNIQUE
+        try:
+            cur.execute("""
+                DO $$
+                BEGIN
+                    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'newsletter_fpl_team_id_key') THEN
+                        ALTER TABLE newsletter ADD CONSTRAINT newsletter_fpl_team_id_key UNIQUE (fpl_team_id);
+                    END IF;
+                END $$;
+            """)
+        except Exception:
+            pass
+            
+        inserted_count = 0
+        for eid, m in sorted(all_mgrs.items(), key=lambda x: x[1]["name"].lower()):
+            cur.execute("""
+                INSERT INTO newsletter (manager_name, fpl_team_id, email, is_active)
+                VALUES (%s, %s, NULL, FALSE)
+                ON CONFLICT (fpl_team_id) DO UPDATE
+                SET manager_name = EXCLUDED.manager_name;
+            """, (m["name"], eid))
+            inserted_count += 1
+            
+        conn.commit()
+        cur.close()
+        conn.close()
+        print(f"✅ Successfully seeded {inserted_count} Toxic 90 managers into Neon DB 'newsletter' table!")
+        print("All managers staged with email=NULL. You can now edit their email addresses in the Neon Console.")
+        return True
+    except Exception as e:
+        print(f"❌ Error seeding managers into Neon DB: {e}")
+        return False
 
 def register_subscriber_in_db(email, fpl_team_id):
     """
@@ -574,13 +660,19 @@ def poll_cycle():
 # ==========================================
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Toxic 90 FPL Autonomous Engine & CLI")
-    parser.add_argument("--mode", "-m", choices=["poll", "scout", "newsletter", "locked", "deadline", "settled", "concluded", "preview"], default="poll", help="Action mode to execute")
+    parser.add_argument("--mode", "-m", choices=["poll", "scout", "newsletter", "locked", "deadline", "settled", "concluded", "preview", "seed_managers"], default="poll", help="Action mode to execute")
     parser.add_argument("--gw", type=int, default=10, help="Gameweek ID for manual runs")
     parser.add_argument("--add-subscriber", nargs=2, metavar=("EMAIL", "FPL_TEAM_ID"), help="Register a new subscriber in Neon DB")
+    parser.add_argument("--seed-managers", action="store_true", help="Fetch all Toxic 90 managers from FPL API and seed into Neon DB")
     
     args, unknown = parser.parse_known_args()
 
-    # Priority 1: Direct subscriber addition via CLI
+    # Priority 1: Seed Toxic 90 managers from FPL API
+    if args.seed_managers or args.mode == "seed_managers":
+        seed_toxic90_managers()
+        sys.exit(0)
+
+    # Priority 2: Direct subscriber addition via CLI
     if args.add_subscriber:
         sub_email, sub_fpl_id = args.add_subscriber
         register_subscriber_in_db(sub_email, int(sub_fpl_id))
