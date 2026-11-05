@@ -14,8 +14,35 @@ class handler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_GET(self):
-        if self.path == '/api/subscribe':
-            self._respond(200, {"status": "ok", "service": "Toxic 90 FPL Subscription API"})
+        clean_path = self.path.split('?')[0]
+        if clean_path in ('/api/subscribe', '/api/subscribe/'):
+            spots_remaining = 50
+            total_active = 0
+            db_url = os.environ.get("DATABASE_URL") or os.environ.get("NEON_DB_URL")
+            if db_url:
+                try:
+                    clean_url = db_url.replace("&channel_binding=require", "").replace("channel_binding=require&", "").replace("?channel_binding=require", "")
+                    p = urllib.parse.urlparse(clean_url)
+                    neon_url = f"https://{p.hostname}/sql"
+                    req_headers = {
+                        "Neon-Connection-String": clean_url,
+                        "Content-Type": "application/json"
+                    }
+                    body_payload = json.dumps({"query": "SELECT COUNT(*) FROM newsletter WHERE id > 37 AND email IS NOT NULL AND email != '';"}).encode("utf-8")
+                    req = urllib.request.Request(neon_url, data=body_payload, headers=req_headers)
+                    with urllib.request.urlopen(req, context=CTX, timeout=5) as r:
+                        c_res = json.loads(r.read().decode("utf-8"))
+                        total_active = int(c_res["rows"][0]["count"])
+                        spots_remaining = max(0, 50 - total_active)
+                except Exception:
+                    pass
+            self._respond(200, {
+                "status": "ok",
+                "service": "Toxic 90 FPL Subscription API",
+                "spots_remaining": spots_remaining,
+                "total_active": total_active,
+                "total_cap": 50
+            })
             return
 
         # Serve static docs (index.html or archive)
@@ -126,8 +153,8 @@ class handler(BaseHTTPRequestHandler):
                 );
             """)
 
-            # 5. Check Global 50-Submissions Cap
-            count_res = run_neon_query("SELECT COUNT(*) FROM newsletter WHERE email IS NOT NULL AND email != '';")
+            # 5. Check Global 50-Submissions Cap (Starts fresh from row 38 onwards)
+            count_res = run_neon_query("SELECT COUNT(*) FROM newsletter WHERE id > 37 AND email IS NOT NULL AND email != '';")
             total_active = int(count_res["rows"][0]["count"])
             if total_active >= 50:
                 self._respond(403, {"success": False, "error": "Submission cap of 50 subscribers has been reached. Form is now closed."})
@@ -180,6 +207,9 @@ class handler(BaseHTTPRequestHandler):
                 "duplicate": False,
                 "manager_name": manager_name,
                 "team_name": team_name,
+                "spots_remaining": max(0, 50 - (total_active + 1)),
+                "total_active": total_active + 1,
+                "total_cap": 50,
                 "message": f"Welcome, {manager_name} ({team_name})! Your subscription is confirmed."
             })
 

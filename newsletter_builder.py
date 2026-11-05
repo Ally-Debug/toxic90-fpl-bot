@@ -456,7 +456,7 @@ def render_newsletter_html(data):
         <div style="background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%); border-radius: 10px; padding: 22px; color: white; margin-bottom: 16px; border: 1px solid #334155;">
             <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
                 <span style="font-size: 11px; font-weight: 800; color: #38bdf8; text-transform: uppercase; letter-spacing: 0.5px;">Direct League Dispatch</span>
-                <span style="font-size: 11px; font-weight: 700; color: #f59e0b; background: rgba(245, 158, 11, 0.15); padding: 2px 8px; border-radius: 12px; border: 1px solid rgba(245, 158, 11, 0.3);">Max Cap: 50 Subscribers</span>
+                <span id="sub_cap_badge" style="font-size: 11px; font-weight: 700; color: #f59e0b; background: rgba(245, 158, 11, 0.15); padding: 2px 8px; border-radius: 12px; border: 1px solid rgba(245, 158, 11, 0.3); transition: all 0.3s ease;">🎯 50 Spots Remaining</span>
             </div>
             <h3 style="margin: 4px 0 8px 0; font-size: 16px; font-weight: 800;">📬 Subscribe to the FPL Intelligence Briefing</h3>
             <p style="margin: 0 0 16px 0; font-size: 12px; color: #94a3b8; line-height: 1.5;">
@@ -783,6 +783,11 @@ async function handleSubscription() {
     btn.style.background = '#10b981';
     btn.style.opacity = '1';
     btn.disabled = true;
+
+    // Immediately decrement spots remaining in the UI counter
+    if (typeof currentSpotsRemaining === 'number' && currentSpotsRemaining > 0) {
+        updateSpotsUI(currentSpotsRemaining - 1);
+    }
 }
 
 function renderAlert(msg, borderColor, bg, textColor) {
@@ -814,6 +819,51 @@ function resetButton() {
         btn.style.background = '#2563eb';
         btn.style.opacity = '1';
     }
+}
+
+let currentSpotsRemaining = 50;
+
+function updateSpotsUI(remaining) {
+    currentSpotsRemaining = remaining;
+    const badge = document.getElementById('sub_cap_badge');
+    const btn = document.getElementById('sub_btn');
+    if (badge) {
+        if (remaining <= 0) {
+            badge.innerText = '🔒 0 Spots Left (Cap Reached)';
+            badge.style.color = '#ef4444';
+            badge.style.borderColor = 'rgba(239, 68, 68, 0.4)';
+            badge.style.background = 'rgba(239, 68, 68, 0.15)';
+            if (btn && !btn.disabled) {
+                btn.disabled = true;
+                btn.innerText = '🔒 Registration Closed (50/50 Cap Reached)';
+                btn.style.background = '#64748b';
+            }
+        } else {
+            badge.innerText = '🎯 ' + remaining + ' Spots Remaining';
+            badge.style.color = remaining <= 5 ? '#ef4444' : '#f59e0b';
+        }
+    }
+}
+
+async function fetchLiveSpots() {
+    try {
+        const isVercelHost = window.location.hostname.includes('vercel.app');
+        const apiUrl = isVercelHost ? '/api/subscribe' : 'https://toxic90-fpl-bot-snowy.vercel.app/api/subscribe';
+        const res = await fetch(apiUrl, { method: 'GET', headers: { 'Accept': 'application/json' } });
+        if (res.ok) {
+            const data = await res.json();
+            if (typeof data.spots_remaining === 'number') {
+                updateSpotsUI(data.spots_remaining);
+            }
+        }
+    } catch (e) {}
+}
+
+// Fetch live spots dynamically from backend on page load
+if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', fetchLiveSpots);
+} else {
+    fetchLiveSpots();
 }
 </script>
 </body>
