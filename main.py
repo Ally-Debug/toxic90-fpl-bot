@@ -641,6 +641,8 @@ def trigger_over(gw, bs=None):
     # 1. Classic Standings
     c_url = f"https://fantasy.premierleague.com/api/leagues-classic/{CLASSIC_LEAGUE_ID}/standings/"
     c_data = fetch_json(c_url)
+    if not isinstance(c_data, dict) or "standings" not in c_data or not c_data.get("standings", {}).get("results"):
+        raise RuntimeError(f"FPL Classic Standings API is currently updating or returned incomplete data. Deferring GW {gw} settlement cards.")
     standings = c_data["standings"]["results"]
     
     art3_rows = []
@@ -675,10 +677,14 @@ def trigger_over(gw, bs=None):
     # 2. H2H Standings & Results
     h2h_url = f"https://fantasy.premierleague.com/api/leagues-h2h/{H2H_LEAGUE_ID}/standings/"
     h2h_data = fetch_json(h2h_url)
+    if not isinstance(h2h_data, dict) or "standings" not in h2h_data or not h2h_data.get("standings", {}).get("results"):
+        raise RuntimeError(f"FPL H2H Standings API is currently updating or returned incomplete data. Deferring GW {gw} settlement cards.")
     h_standings = h2h_data["standings"]["results"]
     
     h2h_matches_url = f"https://fantasy.premierleague.com/api/leagues-h2h-matches/league/{H2H_LEAGUE_ID}/?page=1&event={gw}"
     m_data = fetch_json(h2h_matches_url)
+    if not isinstance(m_data, dict) or "results" not in m_data:
+        raise RuntimeError(f"FPL H2H Matches API is currently updating or returned incomplete data. Deferring GW {gw} settlement cards.")
     matches = m_data.get("results", [])
     
     scores = {}
@@ -810,11 +816,21 @@ def poll_cycle():
 
     # ========================================================
     # TRIGGER 2: POST-GAMEWEEK FINAL SETTLEMENT (ARTIFACTS 3 & 4)
+    # CATCH-UP ARCHITECTURE: FIRES AS SOON AS finished AND data_checked
     # ========================================================
-    if current_ev:
-        gw_id = current_ev["id"]
-        is_finished = current_ev.get("finished", False)
-        data_checked = current_ev.get("data_checked", False)
+    settled_candidates = [e for e in events if e.get("finished") and e.get("data_checked")]
+    latest_settled = settled_candidates[-1] if settled_candidates else None
+
+    # If the latest finished GW has not been sent, evaluate that first as catch-up
+    if latest_settled and (state.get("concluded_gw", 0) < latest_settled["id"] or not state.get("concluded_sent")):
+        eval_settle_ev = latest_settled
+    else:
+        eval_settle_ev = current_ev
+
+    if eval_settle_ev:
+        gw_id = eval_settle_ev["id"]
+        is_finished = eval_settle_ev.get("finished", False)
+        data_checked = eval_settle_ev.get("data_checked", False)
         is_concluded_sent = (state.get("concluded_gw", 0) >= gw_id and state.get("concluded_sent") is True)
         
         print(f"[Settlement Layer] GW {gw_id} Settlement: finished={is_finished}, data_checked={data_checked}. Verified Sent: {is_concluded_sent}")
