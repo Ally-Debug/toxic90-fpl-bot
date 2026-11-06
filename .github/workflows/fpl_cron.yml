@@ -2,8 +2,8 @@ name: Toxic 90 FPL Autonomous Monitor
 
 on:
   schedule:
-    # Runs every hour at the top of the hour (24 runs/day = 720 mins/month, well within 2,000 free minutes)
-    - cron: '0 * * * *'
+    # Runs every 20 minutes (3 times per hour: :00, :20, :40) to eliminate queue delays
+    - cron: '*/20 * * * *'
   workflow_dispatch: # Allows manual trigger anytime from GitHub UI / gh CLI
     inputs:
       mode:

@@ -531,7 +531,14 @@ def trigger_newsletter(gw=10):
     
     # 2. Dispatch Layer 1: Email Newsletter (Email ONLY - NOT Telegram)
     subject = f"Toxic 90 Scout: Game Week {gw} Final Briefing (3 Hours to Lock)"
-    send_html_email(subject, html_content)
+    dispatched = send_html_email(subject, html_content)
+    if dispatched:
+        st = load_state()
+        st["newsletter_gw"] = gw
+        st["newsletter_sent"] = True
+        st["newsletter_sent_at"] = datetime.now(timezone.utc).isoformat()
+        save_state(st)
+        print(f"✅ Verified & Recorded in State: GW {gw} Newsletter marked as SENT at {st['newsletter_sent_at']}")
 
 # ==========================================
 # TRIGGER 1: POST-DEADLINE ARTIFACTS 1 & 2 (T + 20 MINS)
@@ -608,6 +615,14 @@ def trigger_deadline(gw, bs=None):
         )
     except Exception as e:
         print(f"Email dispatch note (Telegram was delivered): {e}")
+
+    # Record verified locked dispatch state
+    st = load_state()
+    st["locked_gw"] = gw
+    st["locked_sent"] = True
+    st["locked_sent_at"] = datetime.now(timezone.utc).isoformat()
+    save_state(st)
+    print(f"✅ Verified & Recorded in State: GW {gw} Post-Deadline Cards marked as SENT at {st['locked_sent_at']}")
 
 # ==========================================
 # TRIGGER 2: POST-GAMEWEEK FINAL SETTLEMENT (ARTIFACTS 3 & 4)
@@ -704,6 +719,15 @@ def trigger_over(gw, bs=None):
     except Exception as e:
         print(f"Email dispatch note (Telegram was delivered): {e}")
 
+    # Record verified concluded dispatch state
+    st = load_state()
+    st["concluded_gw"] = gw
+    st["over_gw"] = gw
+    st["concluded_sent"] = True
+    st["concluded_sent_at"] = datetime.now(timezone.utc).isoformat()
+    save_state(st)
+    print(f"✅ Verified & Recorded in State: GW {gw} Final Settlement Cards marked as SENT at {st['concluded_sent_at']}")
+
 # ==========================================
 # MASTER AUTONOMOUS ORCHESTRATOR
 # ==========================================
@@ -720,63 +744,84 @@ def poll_cycle():
     
     print(f"Status: Current GW = {current_ev['id'] if current_ev else 'None'} | Next GW = {next_ev['id'] if next_ev else 'None'}")
     
-    # Check 0: 3 Hours Before Deadline (Newsletter via Email)
+    # ========================================================
+    # TRIGGER 0: PRE-DEADLINE SCOUT NEWSLETTER (EMAIL ONLY)
+    # TWO-COUNTER ARCHITECTURE WITH VERIFIED 'SENT' CATCH-UP
+    # ========================================================
     target_dl_ev = next_ev or current_ev
     if target_dl_ev and not target_dl_ev.get("finished"):
         gw_id = target_dl_ev["id"]
         dl_str = target_dl_ev["deadline_time"]
         dl_dt = datetime.strptime(dl_str, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
-        diff_hours = (dl_dt - now).total_seconds() / 3600.0
         
-        print(f"GW {gw_id} deadline in {diff_hours:.2f} hours.")
-        # Fires when within ~3 hours before deadline (2.5 to 3.5 hour window)
-        if 0.0 <= diff_hours <= 3.5 and state.get("newsletter_gw", 0) < gw_id:
+        # Counter 1: Minutes until lock (positive = pre-deadline, negative = post-deadline)
+        diff_minutes = (dl_dt - now).total_seconds() / 60.0
+        diff_hours = diff_minutes / 60.0
+        
+        # Counter 2: Verified Sent Status in persistent state
+        is_sent = (state.get("newsletter_gw", 0) >= gw_id and state.get("newsletter_sent") is True)
+        
+        print(f"[Countdown Layer] GW {gw_id} Deadline: in {diff_hours:.2f} hrs ({int(diff_minutes)} mins). Verified Sent: {is_sent}")
+        
+        # Primary window: 4 to 5 hours (up to 300 mins) down to 0 mins before deadline.
+        # If GitHub Actions is delayed by queues, this catch-up layer guarantees that whenever
+        # any run wakes up between T-300m and T-0m, the newsletter WILL be sent if not yet marked sent.
+        if 0.0 <= diff_minutes <= 300.0 and not is_sent:
+            print(f"--> [TRIGGER 0 ACTIVATED] Catch-up check: GW {gw_id} deadline in {int(diff_minutes)} mins. State is NOT sent. Dispatching newsletter...")
             try:
                 trigger_newsletter(gw_id)
-                state["newsletter_gw"] = gw_id
-                save_state(state)
             except Exception as e:
                 print(f"Error in Trigger 0 (Newsletter GW{gw_id}): {e}")
-        elif state.get("newsletter_gw", 0) >= gw_id:
-            print(f"GW {gw_id} newsletter already sent.")
+        elif is_sent:
+            print(f"✅ Verified: GW {gw_id} newsletter already sent (recorded at {state.get('newsletter_sent_at', 'earlier run')}).")
+        elif diff_minutes > 300.0:
+            print(f"GW {gw_id} deadline is more than 5 hours away ({diff_hours:.2f} hrs / {int(diff_minutes)} mins). Standing by.")
 
-    # Check 1: 20 Minutes Post-Deadline (Artifacts 1 & 2 via Telegram)
+    # ========================================================
+    # TRIGGER 1: POST-DEADLINE ARTIFACTS 1 & 2 (TELEGRAM + EMAIL CARDS)
+    # CATCH-UP ARCHITECTURE: FIRES 20+ MINS AFTER DEADLINE
+    # ========================================================
     eval_lock_ev = current_ev if (current_ev and not current_ev.get("finished")) else next_ev
     if eval_lock_ev:
         gw_id = eval_lock_ev["id"]
         dl_epoch = eval_lock_ev["deadline_time_epoch"]
-        if now_epoch >= (dl_epoch + 1200):
-            if state.get("locked_gw", 0) < gw_id:
+        is_locked_sent = (state.get("locked_gw", 0) >= gw_id and state.get("locked_sent") is True)
+        minutes_past_dl = (now_epoch - dl_epoch) / 60.0
+        
+        print(f"[Post-Deadline Layer] GW {gw_id} elapsed since deadline: {minutes_past_dl:.1f} mins. Verified Sent: {is_locked_sent}")
+        
+        if now_epoch >= (dl_epoch + 1200): # 20 minutes (1200s) post-deadline
+            if not is_locked_sent:
+                print(f"--> [TRIGGER 1 ACTIVATED] GW {gw_id} locked ({int(minutes_past_dl)} mins elapsed). Dispatching Artifacts 1 & 2...")
                 try:
                     trigger_deadline(gw_id, bs)
-                    state["locked_gw"] = gw_id
-                    save_state(state)
                 except Exception as e:
                     print(f"Error in Trigger 1 (Locked GW{gw_id}): {e}")
             else:
-                print(f"GW {gw_id} post-deadline cards already sent.")
+                print(f"✅ Verified: GW {gw_id} post-deadline cards already sent (recorded at {state.get('locked_sent_at', 'earlier run')}).")
         else:
             time_left = (dl_epoch + 1200) - now_epoch
-            print(f"GW {gw_id} deadline + 20m not reached yet ({time_left // 60} mins remaining).")
+            print(f"GW {gw_id} deadline + 20m threshold in {time_left // 60} mins.")
 
-    # Check 2: Post-Gameweek Settlement (Artifacts 3 & 4 via Telegram)
+    # ========================================================
+    # TRIGGER 2: POST-GAMEWEEK FINAL SETTLEMENT (ARTIFACTS 3 & 4)
+    # ========================================================
     if current_ev:
         gw_id = current_ev["id"]
         is_finished = current_ev.get("finished", False)
         data_checked = current_ev.get("data_checked", False)
-        print(f"GW {gw_id} Settlement: finished={is_finished}, data_checked={data_checked}")
+        is_concluded_sent = (state.get("concluded_gw", 0) >= gw_id and state.get("concluded_sent") is True)
+        
+        print(f"[Settlement Layer] GW {gw_id} Settlement: finished={is_finished}, data_checked={data_checked}. Verified Sent: {is_concluded_sent}")
         if is_finished and data_checked:
-            concluded_key = state.get("concluded_gw", state.get("over_gw", 0))
-            if concluded_key < gw_id:
+            if not is_concluded_sent:
+                print(f"--> [TRIGGER 2 ACTIVATED] GW {gw_id} settled. Dispatching Artifacts 3 & 4...")
                 try:
                     trigger_over(gw_id, bs)
-                    state["concluded_gw"] = gw_id
-                    state["over_gw"] = gw_id
-                    save_state(state)
                 except Exception as e:
                     print(f"Error in Trigger 2 (Concluded GW{gw_id}): {e}")
             else:
-                print(f"GW {gw_id} post-gameweek cards already sent.")
+                print(f"✅ Verified: GW {gw_id} final settlement cards already sent (recorded at {state.get('concluded_sent_at', 'earlier run')}).")
         else:
             print(f"GW {gw_id} awaiting final settlement (auto-subs & bonus points).")
 
