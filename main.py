@@ -555,6 +555,7 @@ def trigger_deadline(gw, bs=None):
     c_data = fetch_json(c_url)
     top5 = c_data["standings"]["results"][:5]
     
+    valid_picks_count = 0
     art1_rows = []
     for rank, entry in enumerate(top5, 1):
         entry_id = entry["entry"]
@@ -572,10 +573,14 @@ def trigger_deadline(gw, bs=None):
                     cap_name = elements_map.get(p["element"], "Unknown")
                 elif p.get("is_vice_captain"):
                     vc_name = elements_map.get(p["element"], "Unknown")
+            valid_picks_count += 1
         except Exception as e:
             print(f"Could not fetch picks for {mgr_name}: {e}")
             
         art1_rows.append([str(rank), mgr_name, entry_name, cap_name, vc_name, chip_str])
+        
+    if top5 and valid_picks_count == 0:
+        raise RuntimeError(f"FPL servers are still updating (HTTP 503 / game update). Picks for GW {gw} are locked. Deferring card generation until unlocked.")
         
     headers_1 = ["Rank", "Manager", "Team Name", "Captain (C)", "Vice-Captain (VC)", "Active Chip"]
     widths_1 = [45, 135, 145, 95, 95, 80]
